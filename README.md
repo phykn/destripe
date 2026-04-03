@@ -24,8 +24,8 @@ image = ...
 # Perform destriping
 clean_image = destripe(
     image, 
-    mu1=0.33,       # TV regularization (smoothness)
-    mu2=0.003,      # Stripe penalty (sensitivity)
+    mu1=0.1,       # TV regularization (smoothness)
+    mu2=0.001,      # Stripe penalty (sensitivity)
     tiles=2,        # Number of tiles per side (grid)
 )
 ```
