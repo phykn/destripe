@@ -1,18 +1,26 @@
-# Python / Bytecode
+# Python bytecode
 __pycache__/
 *.py[cod]
 
-# Virtual Environment
+# Local environments
 .venv/
+venv/
 
-# Distribution / Build
-dist/
+# Build artifacts
 build/
+dist/
 *.egg-info/
 
-# Tests & Tools
+# Tool and test caches
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
 .coverage
 htmlcov/
+
+# Notebook checkpoints
+.ipynb_checkpoints/
+
+# Markdown files
+*.md
+!README.md

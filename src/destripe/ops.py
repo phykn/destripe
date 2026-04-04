@@ -10,8 +10,8 @@ _LUMA_B = 0.1140
 
 def destripe(
     image: np.ndarray,
-    mu1: float = 0.1,
-    mu2: float = 0.001,
+    mu1: float = 0.33,
+    mu2: float = 0.003,
     iterations: int = 500,
     tol: float = 1e-5,
     tiles: int = 1,
@@ -20,57 +20,80 @@ def destripe(
     device: torch.device | str | None = None,
     verbose: bool = False,
 ) -> np.ndarray:
-    """Removes stripe noise from a numpy image.
+    """Remove stripe noise from a NumPy image.
 
-    Supports grayscale (H, W) and color (H, W, C) images. For color images,
-    stripes are estimated from the luminance channel and subtracted from
-    each color channel to preserve hue.
+    Supports grayscale ``(H, W)`` and color ``(H, W, C)`` images where
+    ``C in {1, 3}``. For RGB inputs, stripe estimates are computed on the
+    luminance channel and then subtracted from each color channel.
 
     Args:
-        image: Input image. Integer or float dtype accepted.
+        image: Input image array.
         mu1: TV regularization weight.
         mu2: L2 stripe penalty weight.
-        iterations: Maximum PDHG iterations.
-        tol: Relative convergence tolerance.
-        tiles: Number of tiles per side for tiled processing.
-        overlap: Overlap pixels between tiles.
-        proj: Whether to project u onto [0, 1].
-        device: Computation device.
-        verbose: Print iteration progress.
+        iterations: Maximum PDHG iterations. Must be positive.
+        tol: Relative convergence tolerance. Must be non-negative.
+        tiles: Number of tiles per image side. Must be positive.
+        overlap: Overlap width between neighboring tiles. Must be non-negative.
+        proj: Whether to project the clean component onto ``[0, 1]``.
+        device: Computation device for the underlying torch solver.
+        verbose: Whether to print iteration progress.
 
     Returns:
-        Destriped image with the same shape and dtype as input.
-    """
-    orig_dtype = image.dtype
-    img = image.astype(np.float64)
+        Destriped image with the same shape and dtype as ``image``.
 
-    vmin, vmax = img.min(), img.max()
-    scale = vmax - vmin
+    Raises:
+        ValueError: If image rank/channels are unsupported, the input contains
+            non-finite values, or solver/tile parameters are invalid.
+    """
+    if not isinstance(iterations, int) or iterations <= 0:
+        raise ValueError(f"iterations must be a positive integer, got {iterations}.")
+    if tol < 0:
+        raise ValueError(f"tol must be non-negative, got {tol}.")
+    if not isinstance(tiles, int) or tiles <= 0:
+        raise ValueError(f"tiles must be a positive integer, got {tiles}.")
+    if overlap < 0:
+        raise ValueError(f"overlap must be non-negative, got {overlap}.")
+
+    input_array = np.asarray(image)
+    if not np.issubdtype(input_array.dtype, np.number):
+        raise ValueError("image must contain numeric values.")
+    if not np.isfinite(input_array).all():
+        raise ValueError("image must not contain NaN or Inf values.")
+
+    orig_dtype = input_array.dtype
+    normalized = input_array.astype(np.float64)
+
+    min_value, max_value = normalized.min(), normalized.max()
+    scale = max_value - min_value
     if scale < 1e-12:
-        return image.copy()
-    img = (img - vmin) / scale
+        return input_array.copy()
+    normalized = (normalized - min_value) / scale
 
     remover = UniversalStripeRemover(mu1=mu1, mu2=mu2, device=device)
 
-    if img.ndim == 2:
-        clean = _run(remover, img, iterations, tol, tiles, overlap, proj, verbose)
-    elif img.ndim == 3 and img.shape[2] in {1, 3}:
-        channels = img.shape[2]
-        if channels == 3:
-            gray = _LUMA_R * img[..., 0] + _LUMA_G * img[..., 1] + _LUMA_B * img[..., 2]
+    if normalized.ndim == 2:
+        clean = _run(remover, normalized, iterations, tol, tiles, overlap, proj, verbose)
+    elif normalized.ndim == 3 and normalized.shape[2] in {1, 3}:
+        channel_count = normalized.shape[2]
+        if channel_count == 3:
+            gray = (
+                _LUMA_R * normalized[..., 0]
+                + _LUMA_G * normalized[..., 1]
+                + _LUMA_B * normalized[..., 2]
+            )
         else:
-            gray = img[..., 0]
+            gray = normalized[..., 0]
 
         clean_gray = _run(remover, gray, iterations, tol, tiles, overlap, proj, verbose)
         stripe = gray - clean_gray
-        clean = np.clip(img - stripe[..., np.newaxis], 0.0, 1.0)
+        clean = np.clip(normalized - stripe[..., np.newaxis], 0.0, 1.0)
     else:
         raise ValueError(
             f"image must have shape (H, W) or (H, W, C) with C in {{1, 3}}, "
-            f"got {image.shape}."
+            f"got {input_array.shape}."
         )
 
-    result = clean * scale + vmin
+    result = clean * scale + min_value
 
     if np.issubdtype(orig_dtype, np.integer):
         info = np.iinfo(orig_dtype)
@@ -89,7 +112,6 @@ def _run(
     proj: bool,
     verbose: bool,
 ) -> np.ndarray:
-
     if tiles > 1:
         out = remover.process_tiled(
             image=gray,

@@ -10,15 +10,16 @@ _NUM_VARS = 1 + _NUM_DIRS  # Clean image u + stripe components s_i
 
 
 class UniversalStripeRemover:
-    """PDHG-based universal stripe noise remover.
+    """Remove stripe noise from grayscale images with a PDHG solver.
 
-    Decomposes an image into a clean component `u` and directional stripe
-    components `s_i`, such that `u + sum(s_i) = data`.
+    The model decomposes input data into a clean component ``u`` and directional
+    stripe components ``s_i`` such that ``u + sum(s_i) = data``.
 
     Args:
         mu1: TV regularization weight for the clean image.
         mu2: L2 penalty weight for stripe components.
-        device: Computation device. Auto-selects CUDA if available.
+        device: Computation device. If ``None``, CUDA is used when available,
+            otherwise CPU.
     """
 
     def __init__(
@@ -43,30 +44,43 @@ class UniversalStripeRemover:
         proj: bool = True,
         verbose: bool = False,
     ) -> torch.Tensor:
-        """Processes the input image to remove stripe noise.
+        """Destripe a grayscale image or a batch of grayscale images.
 
         Args:
-            image: Input image.
-            iterations: Maximum number of PDHG iterations.
-            tol: Convergence tolerance.
-            proj: Whether to project the clean image onto [0, 1].
+            image: Input tensor/array with shape ``(H, W)`` or ``(N, H, W)``.
+            iterations: Maximum number of PDHG iterations. Must be positive.
+            tol: Relative convergence tolerance. Must be non-negative.
+            proj: Whether to project the clean component onto ``[0, 1]``.
             verbose: Whether to print iteration progress.
 
         Returns:
-            The destriped clean image.
+            A tensor with the same rank as ``image`` containing the clean
+            component estimate.
+
+        Raises:
+            ValueError: If ``image`` rank is unsupported, contains non-finite
+                values, or if ``iterations``/``tol`` are invalid.
         """
-        x = self._to_tensor(x=image)
-        if x.dim() not in {2, 3}:
+        self._validate_solver_params(iterations=iterations, tol=tol)
+
+        input_tensor = self._to_tensor(x=image)
+        self._validate_finite_tensor(name="image", x=input_tensor)
+
+        if input_tensor.dim() not in {2, 3}:
             raise ValueError("image must have shape (H, W) or (N, H, W).")
 
-        squeeze = x.dim() == 2
-        if squeeze:
-            x = x.unsqueeze(0)
+        squeeze_batch = input_tensor.dim() == 2
+        if squeeze_batch:
+            input_tensor = input_tensor.unsqueeze(0)
 
-        result = self._solve(
-            data=x, iterations=iterations, tol=tol, proj=proj, verbose=verbose
+        clean = self._solve(
+            data=input_tensor,
+            iterations=iterations,
+            tol=tol,
+            proj=proj,
+            verbose=verbose,
         )
-        return result.squeeze(0) if squeeze else result
+        return clean.squeeze(0) if squeeze_batch else clean
 
     def process_tiled(
         self,
@@ -78,84 +92,111 @@ class UniversalStripeRemover:
         proj: bool = True,
         verbose: bool = False,
     ) -> torch.Tensor:
-        """Processes the input image tile by tile for large data.
+        """Destripe a grayscale image tile-by-tile.
 
         Args:
-            image: Input image.
-            tiles: Number of tiles per side.
-            iterations: Maximum number of PDHG iterations.
-            tol: Convergence tolerance.
-            overlap: Number of pixels for overlap blending between tiles.
-            proj: Whether to project the clean image onto [0, 1].
+            image: Input tensor/array with shape ``(H, W)`` or ``(1, H, W)``.
+            tiles: Number of tiles per image side. Must be positive.
+            iterations: Maximum number of PDHG iterations per tile. Must be
+                positive.
+            tol: Relative convergence tolerance. Must be non-negative.
+            overlap: Overlap width (in pixels) before cosine blending. Must be
+                non-negative.
+            proj: Whether to project the clean component onto ``[0, 1]``.
             verbose: Whether to print iteration progress.
 
         Returns:
-            The destriped clean image.
+            A tensor with shape ``(H, W)``.
+
+        Raises:
+            ValueError: If ``image`` shape is unsupported, contains non-finite
+                values, or if solver/tile parameters are invalid.
         """
-        data = self._to_tensor(x=image)
-        if data.dim() == 2:
-            pass
-        elif data.dim() == 3 and data.shape[0] == 1:
-            data = data.squeeze(0)
+        self._validate_solver_params(iterations=iterations, tol=tol)
+        self._validate_tiling_params(tiles=tiles, overlap=overlap)
+
+        input_tensor = self._to_tensor(x=image)
+        self._validate_finite_tensor(name="image", x=input_tensor)
+
+        if input_tensor.dim() == 2:
+            image_2d = input_tensor
+        elif input_tensor.dim() == 3 and input_tensor.shape[0] == 1:
+            image_2d = input_tensor.squeeze(0)
         else:
             raise ValueError("image must have shape (H, W) or (1, H, W).")
 
         if tiles <= 1:
             return self.process(
-                image=data,
+                image=image_2d,
                 iterations=iterations,
                 tol=tol,
                 proj=proj,
                 verbose=verbose,
             )
 
-        h, w = data.shape
-        data = self._pad_reflect(
-            t=data,
-            pad_bottom=(tiles - h % tiles) % tiles,
-            pad_right=(tiles - w % tiles) % tiles,
+        orig_h, orig_w = image_2d.shape
+        padded_image = self._pad_reflect(
+            t=image_2d,
+            pad_bottom=(tiles - orig_h % tiles) % tiles,
+            pad_right=(tiles - orig_w % tiles) % tiles,
         )
 
-        padded_h, padded_w = data.shape
+        padded_h, padded_w = padded_image.shape
         core_h, core_w = padded_h // tiles, padded_w // tiles
-        ov = max(min(overlap, core_h // 4, core_w // 4), 0)
+        overlap_pixels = max(min(overlap, core_h // 4, core_w // 4), 0)
 
-        data = self._pad_reflect(
-            t=data, pad_top=ov, pad_bottom=ov, pad_left=ov, pad_right=ov
+        padded_image = self._pad_reflect(
+            t=padded_image,
+            pad_top=overlap_pixels,
+            pad_bottom=overlap_pixels,
+            pad_left=overlap_pixels,
+            pad_right=overlap_pixels,
         )
 
-        tile_h, tile_w = core_h + 2 * ov, core_w + 2 * ov
-        tile_list = [
-            data[i * core_h : i * core_h + tile_h, j * core_w : j * core_w + tile_w]
-            for i in range(tiles)
-            for j in range(tiles)
+        tile_h, tile_w = core_h + 2 * overlap_pixels, core_w + 2 * overlap_pixels
+        tiles_batch = [
+            padded_image[
+                row * core_h : row * core_h + tile_h,
+                col * core_w : col * core_w + tile_w,
+            ]
+            for row in range(tiles)
+            for col in range(tiles)
         ]
-        batch = torch.stack(tensors=tile_list)
+        tile_tensor = torch.stack(tensors=tiles_batch)
 
         if verbose:
-            total = tiles * tiles
+            total_tiles = tiles * tiles
             print(
-                f"Tiling {tiles}x{tiles}: {total} tiles of "
-                f"{tile_h}x{tile_w}, overlap={ov}"
+                f"Tiling {tiles}x{tiles}: {total_tiles} tiles of "
+                f"{tile_h}x{tile_w}, overlap={overlap_pixels}"
             )
 
-        results = self.process(
-            image=batch, iterations=iterations, tol=tol, proj=proj, verbose=verbose
+        cleaned_tiles = self.process(
+            image=tile_tensor,
+            iterations=iterations,
+            tol=tol,
+            proj=proj,
+            verbose=verbose,
         )
 
-        weight = self._cosine_window(h=tile_h, w=tile_w, margin=ov)
-        canvas = torch.zeros(padded_h + 2 * ov, padded_w + 2 * ov)
-        weight_sum = torch.zeros_like(input=canvas)
+        blend_weight = self._cosine_window(h=tile_h, w=tile_w, margin=overlap_pixels)
+        blended_canvas = torch.zeros(padded_h + 2 * overlap_pixels, padded_w + 2 * overlap_pixels)
+        blend_sum = torch.zeros_like(input=blended_canvas)
 
-        for idx, (i, j) in enumerate(
-            (i, j) for i in range(tiles) for j in range(tiles)
+        for idx, (row, col) in enumerate(
+            (row, col) for row in range(tiles) for col in range(tiles)
         ):
-            y, x = i * core_h, j * core_w
-            canvas[y : y + tile_h, x : x + tile_w] += results[idx] * weight
-            weight_sum[y : y + tile_h, x : x + tile_w] += weight
+            y0, x0 = row * core_h, col * core_w
+            blended_canvas[y0 : y0 + tile_h, x0 : x0 + tile_w] += (
+                cleaned_tiles[idx] * blend_weight
+            )
+            blend_sum[y0 : y0 + tile_h, x0 : x0 + tile_w] += blend_weight
 
-        canvas /= weight_sum.clamp(min=1e-9)
-        return canvas[ov : ov + padded_h, ov : ov + padded_w][:h, :w]
+        blended_canvas /= blend_sum.clamp(min=1e-9)
+        return blended_canvas[
+            overlap_pixels : overlap_pixels + padded_h,
+            overlap_pixels : overlap_pixels + padded_w,
+        ][:orig_h, :orig_w]
 
     def _solve(
         self,
@@ -170,108 +211,135 @@ class UniversalStripeRemover:
         # PDHG constants (pre-scaled by sigma)
         #   standard form: u -= tau * K^T p_bar
         #   here: step = tau * sigma is used with sigma-scaled duals
-        step = self.tau * self.sigma
-        lam = self.mu1 / self.sigma  # TV dual ball radius
-        q_clip = 1.0 / self.sigma  # directional sparsity dual bound
-        r_clip = self.mu2 / self.sigma  # L2 penalty dual bound
+        step_size = self.tau * self.sigma
+        tv_dual_radius = self.mu1 / self.sigma
+        dir_dual_clip = 1.0 / self.sigma
+        l2_dual_clip = self.mu2 / self.sigma
         eps = 1e-9
 
-        # Primal variables
-        u = data.clone()
-        s = [torch.zeros_like(input=data) for _ in range(_NUM_DIRS)]
+        clean = data.clone()
+        stripe_components = [torch.zeros_like(input=data) for _ in range(_NUM_DIRS)]
 
-        # Dual variables for TV gradient
-        p_h, p_h_bar = self._zero_pair(ref=data)
-        p_v, p_v_bar = self._zero_pair(ref=data)
+        grad_h, grad_h_bar = self._zero_pair(ref=data)
+        grad_v, grad_v_bar = self._zero_pair(ref=data)
 
-        # Dual variables for directional sparsity (q) and L2 penalty (r)
-        q_pairs = [self._zero_pair(ref=data) for _ in range(_NUM_DIRS)]
-        r_pairs = [self._zero_pair(ref=data) for _ in range(_NUM_DIRS)]
-        q = [pair[0] for pair in q_pairs]
-        q_bar = [pair[1] for pair in q_pairs]
-        r = [pair[0] for pair in r_pairs]
-        r_bar = [pair[1] for pair in r_pairs]
+        dir_dual_pairs = [self._zero_pair(ref=data) for _ in range(_NUM_DIRS)]
+        l2_dual_pairs = [self._zero_pair(ref=data) for _ in range(_NUM_DIRS)]
+        dir_dual = [pair[0] for pair in dir_dual_pairs]
+        dir_dual_bar = [pair[1] for pair in dir_dual_pairs]
+        l2_dual = [pair[0] for pair in l2_dual_pairs]
+        l2_dual_bar = [pair[1] for pair in l2_dual_pairs]
 
-        u_prev = u.clone()
-        buf = torch.empty_like(input=data)
-        dir_buf = torch.empty_like(input=data)
-        diff_buf = torch.empty_like(input=data)
+        prev_clean = clean.clone()
+        correction = torch.empty_like(input=data)
+        directional_diff = torch.empty_like(input=data)
+        grad_norm = torch.empty_like(input=data)
 
         with torch.no_grad():
-            for k in range(iterations):
+            for iteration_idx in range(iterations):
                 if verbose:
-                    print(f"\rIteration: {k + 1} / {iterations}", end="")
+                    print(f"\rIteration: {iteration_idx + 1} / {iterations}", end="")
 
-                # --- Primal step ---
-                self._adjoint_grad(target=u, p_h=p_h_bar, p_v=p_v_bar, a=step)
+                self._adjoint_grad(
+                    target=clean,
+                    p_h=grad_h_bar,
+                    p_v=grad_v_bar,
+                    a=step_size,
+                )
 
-                for i in range(_NUM_DIRS):
-                    self._adjoint_dir(target=s[i], q=q_bar[i], mode=i, a=step)
-                    s[i].sub_(r_bar[i], alpha=step)
+                for mode in range(_NUM_DIRS):
+                    self._adjoint_dir(
+                        target=stripe_components[mode],
+                        q=dir_dual_bar[mode],
+                        mode=mode,
+                        a=step_size,
+                    )
+                    stripe_components[mode].sub_(l2_dual_bar[mode], alpha=step_size)
 
-                # Enforce constraint: u + sum(s_i) = data
-                buf.copy_(data)
-                for si in s:
-                    buf.sub_(si)
-                buf.sub_(u).div_(_NUM_VARS)
-                u.add_(buf)
-                for si in s:
-                    si.add_(buf)
+                # Enforce u + sum(s_i) = data via shared correction.
+                correction.copy_(data)
+                for stripe_component in stripe_components:
+                    correction.sub_(stripe_component)
+                correction.sub_(clean).div_(_NUM_VARS)
+                clean.add_(correction)
+                for stripe_component in stripe_components:
+                    stripe_component.add_(correction)
 
-                # Project u onto [0, 1], redistribute excess to s_i
                 if proj:
-                    torch.clamp(input=u, max=0, out=buf)
-                    buf.add_((u - 1).clamp_(min=0))
-                    buf.div_(_NUM_DIRS)
-                    for si in s:
-                        si.add_(buf)
-                    u.clamp_(min=0, max=1)
+                    torch.clamp(input=clean, max=0, out=correction)
+                    correction.add_((clean - 1).clamp_(min=0))
+                    correction.div_(_NUM_DIRS)
+                    for stripe_component in stripe_components:
+                        stripe_component.add_(correction)
+                    clean.clamp_(min=0, max=1)
 
-                # --- Dual step: TV (isotropic projection) ---
-                p_h_bar.copy_(p_h)
-                p_v_bar.copy_(p_v)
+                grad_h_bar.copy_(grad_h)
+                grad_v_bar.copy_(grad_v)
 
-                self._forward_diff(x=u, dim=1, out=buf)
-                p_h.add_(buf)
-                self._forward_diff(x=u, dim=2, out=buf)
-                p_v.add_(buf)
+                self._forward_diff(x=clean, dim=1, out=correction)
+                grad_h.add_(correction)
+                self._forward_diff(x=clean, dim=2, out=correction)
+                grad_v.add_(correction)
 
-                torch.mul(p_h, p_h, out=diff_buf)
-                diff_buf.addcmul_(p_v, p_v)
-                diff_buf.sqrt_().clamp_(min=eps)
-                torch.div(lam, diff_buf, out=buf)
-                buf.clamp_(max=1.0)
-                p_h.mul_(buf)
-                p_v.mul_(buf)
+                torch.mul(grad_h, grad_h, out=grad_norm)
+                grad_norm.addcmul_(grad_v, grad_v)
+                grad_norm.sqrt_().clamp_(min=eps)
+                torch.div(tv_dual_radius, grad_norm, out=correction)
+                correction.clamp_(max=1.0)
+                grad_h.mul_(correction)
+                grad_v.mul_(correction)
 
-                p_h_bar.mul_(-1).add_(p_h, alpha=2)
-                p_v_bar.mul_(-1).add_(p_v, alpha=2)
+                grad_h_bar.mul_(-1).add_(grad_h, alpha=2)
+                grad_v_bar.mul_(-1).add_(grad_v, alpha=2)
 
-                # --- Dual step: directional sparsity + L2 ---
-                for i in range(_NUM_DIRS):
-                    q_bar[i].copy_(q[i])
-                    self._dir_diff(x=s[i], mode=i, out=dir_buf)
-                    q[i].add_(dir_buf).clamp_(min=-q_clip, max=q_clip)
-                    q_bar[i].mul_(-1).add_(q[i], alpha=2)
+                for mode in range(_NUM_DIRS):
+                    dir_dual_bar[mode].copy_(dir_dual[mode])
+                    self._dir_diff(x=stripe_components[mode], mode=mode, out=directional_diff)
+                    dir_dual[mode].add_(directional_diff).clamp_(
+                        min=-dir_dual_clip,
+                        max=dir_dual_clip,
+                    )
+                    dir_dual_bar[mode].mul_(-1).add_(dir_dual[mode], alpha=2)
 
-                    r_bar[i].copy_(r[i])
-                    r[i].add_(s[i]).clamp_(min=-r_clip, max=r_clip)
-                    r_bar[i].mul_(-1).add_(r[i], alpha=2)
+                    l2_dual_bar[mode].copy_(l2_dual[mode])
+                    l2_dual[mode].add_(stripe_components[mode]).clamp_(
+                        min=-l2_dual_clip,
+                        max=l2_dual_clip,
+                    )
+                    l2_dual_bar[mode].mul_(-1).add_(l2_dual[mode], alpha=2)
 
-                # Convergence check
-                if k > 0 and k % 20 == 0:
-                    torch.sub(input=u, other=u_prev, out=buf)
-                    rel = buf.norm() / (u_prev.norm() + eps)
-                    if rel < tol:
+                if iteration_idx > 0 and iteration_idx % 20 == 0:
+                    torch.sub(input=clean, other=prev_clean, out=correction)
+                    rel_change = correction.norm() / (prev_clean.norm() + eps)
+                    if rel_change < tol:
                         if verbose:
-                            print(f"\nConverged at iteration {k + 1}.")
+                            print(f"\nConverged at iteration {iteration_idx + 1}.")
                         break
-                    u_prev.copy_(u)
+                    prev_clean.copy_(clean)
 
         if verbose:
             print("")
 
-        return u.cpu()
+        return clean.cpu()
+
+    @staticmethod
+    def _validate_solver_params(iterations: int, tol: float) -> None:
+        if not isinstance(iterations, int) or iterations <= 0:
+            raise ValueError(f"iterations must be a positive integer, got {iterations}.")
+        if tol < 0:
+            raise ValueError(f"tol must be non-negative, got {tol}.")
+
+    @staticmethod
+    def _validate_tiling_params(tiles: int, overlap: int) -> None:
+        if not isinstance(tiles, int) or tiles <= 0:
+            raise ValueError(f"tiles must be a positive integer, got {tiles}.")
+        if overlap < 0:
+            raise ValueError(f"overlap must be non-negative, got {overlap}.")
+
+    @staticmethod
+    def _validate_finite_tensor(name: str, x: torch.Tensor) -> None:
+        if not torch.isfinite(x).all():
+            raise ValueError(f"{name} must not contain NaN or Inf values.")
 
     @staticmethod
     def _forward_diff(
@@ -372,6 +440,15 @@ class UniversalStripeRemover:
     ) -> torch.Tensor:
         if not isinstance(x, torch.Tensor):
             x = torch.as_tensor(data=x)
+        if not (torch.is_floating_point(x) or torch.is_complex(x) or x.dtype in {
+            torch.uint8,
+            torch.int8,
+            torch.int16,
+            torch.int32,
+            torch.int64,
+            torch.bool,
+        }):
+            raise ValueError("image must contain numeric values.")
         return x.to(dtype=torch.float32)
 
     @staticmethod
