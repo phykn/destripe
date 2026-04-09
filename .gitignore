@@ -21,6 +21,14 @@ htmlcov/
 # Notebook checkpoints
 .ipynb_checkpoints/
 
-# Markdown files
-*.md
-!README.md
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+
+# CLAUDE
+.claude/
+CLAUDE.md
