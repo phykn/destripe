@@ -10,13 +10,13 @@ PDHG-based universal stripe-noise removal for NumPy images (`[H, W]` or `[H, W, 
 
 ## Install
 ```bash
-pip install .
+pip install destripe
 ```
 
 For development:
 ```bash
-python -m venv .venv
-source .venv/bin/activate
+git clone https://github.com/phykn/destripe.git
+cd destripe
 pip install -e .
 ```
 
