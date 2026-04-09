@@ -3,6 +3,7 @@ import torch
 
 from .core import UniversalStripeRemover
 
+# Rec. 601 luma coefficients (standard for NTSC/JPEG grayscale conversion)
 _LUMA_R = 0.2989
 _LUMA_G = 0.5870
 _LUMA_B = 0.1140
@@ -74,8 +75,7 @@ def destripe(
     if normalized.ndim == 2:
         clean = _run(remover, normalized, iterations, tol, tiles, overlap, proj, verbose)
     elif normalized.ndim == 3 and normalized.shape[2] in {1, 3}:
-        channel_count = normalized.shape[2]
-        if channel_count == 3:
+        if normalized.shape[2] == 3:
             gray = (
                 _LUMA_R * normalized[..., 0]
                 + _LUMA_G * normalized[..., 1]

@@ -220,8 +220,8 @@ class UniversalStripeRemover:
         clean = data.clone()
         stripe_components = [torch.zeros_like(input=data) for _ in range(_NUM_DIRS)]
 
-        grad_h, grad_h_bar = self._zero_pair(ref=data)
-        grad_v, grad_v_bar = self._zero_pair(ref=data)
+        grad_row, grad_row_bar = self._zero_pair(ref=data)
+        grad_col, grad_col_bar = self._zero_pair(ref=data)
 
         dir_dual_pairs = [self._zero_pair(ref=data) for _ in range(_NUM_DIRS)]
         l2_dual_pairs = [self._zero_pair(ref=data) for _ in range(_NUM_DIRS)]
@@ -242,8 +242,8 @@ class UniversalStripeRemover:
 
                 self._adjoint_grad(
                     target=clean,
-                    p_h=grad_h_bar,
-                    p_v=grad_v_bar,
+                    p_h=grad_row_bar,
+                    p_v=grad_col_bar,
                     a=step_size,
                 )
 
@@ -266,6 +266,8 @@ class UniversalStripeRemover:
                     stripe_component.add_(correction)
 
                 if proj:
+                    # Distribute clamp residual to stripes to maintain
+                    # the constraint u + sum(s_i) = data.
                     torch.clamp(input=clean, max=0, out=correction)
                     correction.add_((clean - 1).clamp_(min=0))
                     correction.div_(_NUM_DIRS)
@@ -273,24 +275,24 @@ class UniversalStripeRemover:
                         stripe_component.add_(correction)
                     clean.clamp_(min=0, max=1)
 
-                grad_h_bar.copy_(grad_h)
-                grad_v_bar.copy_(grad_v)
+                grad_row_bar.copy_(grad_row)
+                grad_col_bar.copy_(grad_col)
 
                 self._forward_diff(x=clean, dim=1, out=correction)
-                grad_h.add_(correction)
+                grad_row.add_(correction)
                 self._forward_diff(x=clean, dim=2, out=correction)
-                grad_v.add_(correction)
+                grad_col.add_(correction)
 
-                torch.mul(grad_h, grad_h, out=grad_norm)
-                grad_norm.addcmul_(grad_v, grad_v)
+                torch.mul(grad_row, grad_row, out=grad_norm)
+                grad_norm.addcmul_(grad_col, grad_col)
                 grad_norm.sqrt_().clamp_(min=eps)
                 torch.div(tv_dual_radius, grad_norm, out=correction)
                 correction.clamp_(max=1.0)
-                grad_h.mul_(correction)
-                grad_v.mul_(correction)
+                grad_row.mul_(correction)
+                grad_col.mul_(correction)
 
-                grad_h_bar.mul_(-1).add_(grad_h, alpha=2)
-                grad_v_bar.mul_(-1).add_(grad_v, alpha=2)
+                grad_row_bar.mul_(-1).add_(grad_row, alpha=2)
+                grad_col_bar.mul_(-1).add_(grad_col, alpha=2)
 
                 for mode in range(_NUM_DIRS):
                     dir_dual_bar[mode].copy_(dir_dual[mode])
@@ -440,15 +442,6 @@ class UniversalStripeRemover:
     ) -> torch.Tensor:
         if not isinstance(x, torch.Tensor):
             x = torch.as_tensor(data=x)
-        if not (torch.is_floating_point(x) or torch.is_complex(x) or x.dtype in {
-            torch.uint8,
-            torch.int8,
-            torch.int16,
-            torch.int32,
-            torch.int64,
-            torch.bool,
-        }):
-            raise ValueError("image must contain numeric values.")
         return x.to(dtype=torch.float32)
 
     @staticmethod
