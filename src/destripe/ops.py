@@ -112,22 +112,13 @@ def _run(
     proj: bool,
     verbose: bool,
 ) -> np.ndarray:
-    if tiles > 1:
-        out = remover.process_tiled(
-            image=gray,
-            tiles=tiles,
-            iterations=iterations,
-            tol=tol,
-            overlap=overlap,
-            proj=proj,
-            verbose=verbose,
-        )
-    else:
-        out = remover.process(
-            image=gray,
-            iterations=iterations,
-            tol=tol,
-            proj=proj,
-            verbose=verbose,
-        )
+    out = remover.process_tiled(
+        image=gray,
+        tiles=tiles,
+        iterations=iterations,
+        tol=tol,
+        overlap=overlap,
+        proj=proj,
+        verbose=verbose,
+    )
     return out.numpy().astype(np.float64)
