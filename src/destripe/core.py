@@ -231,7 +231,7 @@ class UniversalStripeRemover:
         l2_dual_bar = [pair[1] for pair in l2_dual_pairs]
 
         prev_clean = clean.clone()
-        correction = torch.empty_like(input=data)
+        scratch = torch.empty_like(input=data)
         directional_diff = torch.empty_like(input=data)
         grad_norm = torch.empty_like(input=data)
 
@@ -256,40 +256,40 @@ class UniversalStripeRemover:
                     )
                     stripe_components[mode].sub_(l2_dual_bar[mode], alpha=step_size)
 
-                # Enforce u + sum(s_i) = data via shared correction.
-                correction.copy_(data)
+                # Enforce u + sum(s_i) = data via shared scratch.
+                scratch.copy_(data)
                 for stripe_component in stripe_components:
-                    correction.sub_(stripe_component)
-                correction.sub_(clean).div_(_NUM_VARS)
-                clean.add_(correction)
+                    scratch.sub_(stripe_component)
+                scratch.sub_(clean).div_(_NUM_VARS)
+                clean.add_(scratch)
                 for stripe_component in stripe_components:
-                    stripe_component.add_(correction)
+                    stripe_component.add_(scratch)
 
                 if proj:
                     # Distribute clamp residual to stripes to maintain
                     # the constraint u + sum(s_i) = data.
-                    torch.clamp(input=clean, max=0, out=correction)
-                    correction.add_((clean - 1).clamp_(min=0))
-                    correction.div_(_NUM_DIRS)
+                    torch.clamp(input=clean, max=0, out=scratch)
+                    scratch.add_((clean - 1).clamp_(min=0))
+                    scratch.div_(_NUM_DIRS)
                     for stripe_component in stripe_components:
-                        stripe_component.add_(correction)
+                        stripe_component.add_(scratch)
                     clean.clamp_(min=0, max=1)
 
                 grad_row_bar.copy_(grad_row)
                 grad_col_bar.copy_(grad_col)
 
-                self._forward_diff(x=clean, dim=1, out=correction)
-                grad_row.add_(correction)
-                self._forward_diff(x=clean, dim=2, out=correction)
-                grad_col.add_(correction)
+                self._forward_diff(x=clean, dim=1, out=scratch)
+                grad_row.add_(scratch)
+                self._forward_diff(x=clean, dim=2, out=scratch)
+                grad_col.add_(scratch)
 
                 torch.mul(grad_row, grad_row, out=grad_norm)
                 grad_norm.addcmul_(grad_col, grad_col)
                 grad_norm.sqrt_().clamp_(min=eps)
-                torch.div(tv_dual_radius, grad_norm, out=correction)
-                correction.clamp_(max=1.0)
-                grad_row.mul_(correction)
-                grad_col.mul_(correction)
+                torch.div(tv_dual_radius, grad_norm, out=scratch)
+                scratch.clamp_(max=1.0)
+                grad_row.mul_(scratch)
+                grad_col.mul_(scratch)
 
                 grad_row_bar.mul_(-1).add_(grad_row, alpha=2)
                 grad_col_bar.mul_(-1).add_(grad_col, alpha=2)
@@ -311,8 +311,8 @@ class UniversalStripeRemover:
                     l2_dual_bar[mode].mul_(-1).add_(l2_dual[mode], alpha=2)
 
                 if iteration_idx > 0 and iteration_idx % 20 == 0:
-                    torch.sub(input=clean, other=prev_clean, out=correction)
-                    rel_change = correction.norm() / (prev_clean.norm() + eps)
+                    torch.sub(input=clean, other=prev_clean, out=scratch)
+                    rel_change = scratch.norm() / (prev_clean.norm() + eps)
                     if rel_change < tol:
                         if verbose:
                             print(f"\nConverged at iteration {iteration_idx + 1}.")
