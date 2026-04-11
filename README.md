@@ -48,11 +48,5 @@ Integer inputs are clipped to their dtype range on output.
 
 Starting points, not universal optima.
 
-## Test
-```bash
-pip install -e .
-pytest -q
-```
-
 ## Reference
 - https://github.com/NiklasRottmayer/General-Stripe-Removal
