@@ -46,15 +46,6 @@ def destripe(
         ValueError: If image rank/channels are unsupported, the input contains
             non-finite values, or solver/tile parameters are invalid.
     """
-    if not isinstance(iterations, int) or iterations <= 0:
-        raise ValueError(f"iterations must be a positive integer, got {iterations}.")
-    if tol < 0:
-        raise ValueError(f"tol must be non-negative, got {tol}.")
-    if not isinstance(tiles, int) or tiles <= 0:
-        raise ValueError(f"tiles must be a positive integer, got {tiles}.")
-    if overlap < 0:
-        raise ValueError(f"overlap must be non-negative, got {overlap}.")
-
     input_array = np.asarray(image)
     if not np.issubdtype(input_array.dtype, np.number):
         raise ValueError("image must contain numeric values.")
