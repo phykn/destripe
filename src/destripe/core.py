@@ -36,6 +36,8 @@ class UniversalStripeRemover:
         self.tau = 0.35
         self.sigma = 0.35
 
+    # --- Public API ---
+
     def process(
         self,
         image: torch.Tensor | np.ndarray,
@@ -55,11 +57,21 @@ class UniversalStripeRemover:
 
         Returns:
             A tensor with the same rank as ``image`` containing the clean
-            component estimate.
+            component estimate. Floating-point input dtypes are preserved
+            (fp32 in / fp32 out, fp64 in / fp64 out); integer inputs are
+            promoted to fp32.
 
         Raises:
             ValueError: If ``image`` rank is unsupported, contains non-finite
                 values, or if ``iterations``/``tol`` are invalid.
+
+        Note:
+            The convergence check at iteration ``20k`` (``k >= 1``) compares
+            ``u`` against its snapshot from iteration ``20(k-1)``. On CUDA,
+            reductions used by the convergence norm are not bit-deterministic
+            across runs by default; iteration count and outputs may differ
+            for identical inputs unless ``torch.use_deterministic_algorithms``
+            is enabled globally.
         """
         self._validate_solver_params(iterations=iterations, tol=tol)
 
@@ -154,13 +166,13 @@ class UniversalStripeRemover:
         )
 
         tile_h, tile_w = core_h + 2 * overlap_pixels, core_w + 2 * overlap_pixels
+        indices = [(row, col) for row in range(tiles) for col in range(tiles)]
         tiles_batch = [
             padded_image[
                 row * core_h : row * core_h + tile_h,
                 col * core_w : col * core_w + tile_w,
             ]
-            for row in range(tiles)
-            for col in range(tiles)
+            for row, col in indices
         ]
         tile_tensor = torch.stack(tensors=tiles_batch)
 
@@ -179,13 +191,18 @@ class UniversalStripeRemover:
             verbose=verbose,
         )
 
-        blend_weight = self._cosine_window(h=tile_h, w=tile_w, margin=overlap_pixels)
-        blended_canvas = torch.zeros(padded_h + 2 * overlap_pixels, padded_w + 2 * overlap_pixels)
+        blend_weight = self._cosine_window(h=tile_h, w=tile_w, margin=overlap_pixels).to(
+            device=cleaned_tiles.device, dtype=cleaned_tiles.dtype
+        )
+        blended_canvas = torch.zeros(
+            padded_h + 2 * overlap_pixels,
+            padded_w + 2 * overlap_pixels,
+            device=cleaned_tiles.device,
+            dtype=cleaned_tiles.dtype,
+        )
         blend_sum = torch.zeros_like(input=blended_canvas)
 
-        for idx, (row, col) in enumerate(
-            (row, col) for row in range(tiles) for col in range(tiles)
-        ):
+        for idx, (row, col) in enumerate(indices):
             y0, x0 = row * core_h, col * core_w
             blended_canvas[y0 : y0 + tile_h, x0 : x0 + tile_w] += (
                 cleaned_tiles[idx] * blend_weight
@@ -198,6 +215,8 @@ class UniversalStripeRemover:
             overlap_pixels : overlap_pixels + padded_w,
         ][:orig_h, :orig_w]
 
+    # --- Solver ---
+
     def _solve(
         self,
         data: torch.Tensor,
@@ -206,7 +225,10 @@ class UniversalStripeRemover:
         proj: bool,
         verbose: bool,
     ) -> torch.Tensor:
-        data = data.to(device=self.device, dtype=torch.float32)
+        if data.is_floating_point():
+            data = data.to(device=self.device)
+        else:
+            data = data.to(device=self.device, dtype=torch.float32)
 
         # PDHG constants (pre-scaled by sigma)
         #   standard form: u -= tau * K^T p_bar
@@ -223,12 +245,10 @@ class UniversalStripeRemover:
         grad_row, grad_row_bar = self._zero_pair(ref=data)
         grad_col, grad_col_bar = self._zero_pair(ref=data)
 
-        dir_dual_pairs = [self._zero_pair(ref=data) for _ in range(_NUM_DIRS)]
-        l2_dual_pairs = [self._zero_pair(ref=data) for _ in range(_NUM_DIRS)]
-        dir_dual = [pair[0] for pair in dir_dual_pairs]
-        dir_dual_bar = [pair[1] for pair in dir_dual_pairs]
-        l2_dual = [pair[0] for pair in l2_dual_pairs]
-        l2_dual_bar = [pair[1] for pair in l2_dual_pairs]
+        dir_dual = [torch.zeros_like(input=data) for _ in range(_NUM_DIRS)]
+        dir_dual_bar = [torch.zeros_like(input=data) for _ in range(_NUM_DIRS)]
+        l2_dual = [torch.zeros_like(input=data) for _ in range(_NUM_DIRS)]
+        l2_dual_bar = [torch.zeros_like(input=data) for _ in range(_NUM_DIRS)]
 
         prev_clean = clean.clone()
         scratch = torch.empty_like(input=data)
@@ -310,19 +330,22 @@ class UniversalStripeRemover:
                     )
                     l2_dual_bar[mode].mul_(-1).add_(l2_dual[mode], alpha=2)
 
-                if iteration_idx > 0 and iteration_idx % 20 == 0:
-                    torch.sub(input=clean, other=prev_clean, out=scratch)
-                    rel_change = scratch.norm() / (prev_clean.norm() + eps)
-                    if rel_change < tol:
-                        if verbose:
-                            print(f"\nConverged at iteration {iteration_idx + 1}.")
-                        break
+                if iteration_idx % 20 == 0:
+                    if iteration_idx > 0:
+                        torch.sub(input=clean, other=prev_clean, out=scratch)
+                        rel_change = scratch.norm() / (prev_clean.norm() + eps)
+                        if rel_change < tol:
+                            if verbose:
+                                print(f"\nConverged at iteration {iteration_idx + 1}.")
+                            break
                     prev_clean.copy_(clean)
 
         if verbose:
             print("")
 
         return clean.cpu()
+
+    # --- Validation ---
 
     @staticmethod
     def _validate_solver_params(iterations: int, tol: float) -> None:
@@ -342,6 +365,8 @@ class UniversalStripeRemover:
     def _validate_finite_tensor(name: str, x: torch.Tensor) -> None:
         if not torch.isfinite(x).all():
             raise ValueError(f"{name} must not contain NaN or Inf values.")
+
+    # --- Differential operators ---
 
     @staticmethod
     def _forward_diff(
@@ -436,12 +461,16 @@ class UniversalStripeRemover:
             target[:, 1:, :-1].sub_(q[:, :-1, 1:], alpha=a)
             target[:, :-1, 1:].add_(q[:, :-1, 1:], alpha=a)
 
+    # --- Tensor utilities ---
+
     def _to_tensor(
         self,
         x: torch.Tensor | np.ndarray,
     ) -> torch.Tensor:
         if not isinstance(x, torch.Tensor):
             x = torch.as_tensor(data=x)
+        if x.is_floating_point():
+            return x
         return x.to(dtype=torch.float32)
 
     @staticmethod

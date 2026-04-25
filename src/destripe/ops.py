@@ -40,7 +40,8 @@ def destripe(
         verbose: Whether to print iteration progress.
 
     Returns:
-        Destriped image with the same shape and dtype as ``image``.
+        Destriped image with the same shape and dtype as
+        ``np.asarray(image)``.
 
     Raises:
         ValueError: If image rank/channels are unsupported, the input contains
@@ -77,7 +78,9 @@ def destripe(
 
         clean_gray = _run(remover, gray, iterations, tol, tiles, overlap, proj, verbose)
         stripe = gray - clean_gray
-        clean = np.clip(normalized - stripe[..., np.newaxis], 0.0, 1.0)
+        clean = normalized - stripe[..., np.newaxis]
+        if proj:
+            clean = np.clip(clean, 0.0, 1.0)
     else:
         raise ValueError(
             f"image must have shape (H, W) or (H, W, C) with C in {{1, 3}}, "
@@ -112,4 +115,4 @@ def _run(
         proj=proj,
         verbose=verbose,
     )
-    return out.numpy().astype(np.float64)
+    return out.numpy()

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "destripe"
-version = "0.1.1"
+version = "0.1.2"
 description = "PDHG-based universal stripe-noise removal for images, backed by PyTorch"
 readme = "README.md"
 license = "MIT"

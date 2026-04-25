@@ -4,7 +4,7 @@ Universal stripe-noise removal for NumPy images. Decomposes an image into a TV-r
 
 ## Features
 - Removes vertical and diagonal stripe patterns (5 directions).
-- Preserves dtype and value range: `uint8`, `float32`, `float64` round-trip unchanged.
+- Preserves input dtype and value range (`uint8`, `float32`, `float64`).
 - Supports grayscale, single-channel, and RGB; color is preserved by estimating stripes on the luminance channel.
 - Tiled processing with cosine blending for large images that do not fit in memory.
 - Auto-selects CUDA when available; falls back to CPU.
