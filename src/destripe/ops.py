@@ -65,7 +65,16 @@ def destripe(
     remover = UniversalStripeRemover(mu1=mu1, mu2=mu2, device=device)
 
     if normalized.ndim == 2:
-        clean = _run(remover, normalized, iterations, tol, tiles, overlap, proj, verbose)
+        clean = _run_grayscale(
+            remover=remover,
+            gray=normalized,
+            iterations=iterations,
+            tol=tol,
+            tiles=tiles,
+            overlap=overlap,
+            proj=proj,
+            verbose=verbose,
+        )
     elif normalized.ndim == 3 and normalized.shape[2] in {1, 3}:
         if normalized.shape[2] == 3:
             gray = (
@@ -76,7 +85,16 @@ def destripe(
         else:
             gray = normalized[..., 0]
 
-        clean_gray = _run(remover, gray, iterations, tol, tiles, overlap, proj, verbose)
+        clean_gray = _run_grayscale(
+            remover=remover,
+            gray=gray,
+            iterations=iterations,
+            tol=tol,
+            tiles=tiles,
+            overlap=overlap,
+            proj=proj,
+            verbose=verbose,
+        )
         stripe = gray - clean_gray
         clean = normalized - stripe[..., np.newaxis]
         if proj:
@@ -96,7 +114,7 @@ def destripe(
     return result.astype(orig_dtype)
 
 
-def _run(
+def _run_grayscale(
     remover: UniversalStripeRemover,
     gray: np.ndarray,
     iterations: int,

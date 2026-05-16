@@ -155,7 +155,7 @@ class UniversalStripeRemover:
 
         padded_h, padded_w = padded_image.shape
         core_h, core_w = padded_h // tiles, padded_w // tiles
-        overlap_pixels = max(min(overlap, core_h // 4, core_w // 4), 0)
+        overlap_pixels = min(overlap, core_h // 4, core_w // 4)
 
         padded_image = self._pad_reflect(
             t=padded_image,
@@ -316,7 +316,11 @@ class UniversalStripeRemover:
 
                 for mode in range(_NUM_DIRS):
                     dir_dual_bar[mode].copy_(dir_dual[mode])
-                    self._dir_diff(x=stripe_components[mode], mode=mode, out=directional_diff)
+                    self._dir_diff(
+                        x=stripe_components[mode],
+                        mode=mode,
+                        out=directional_diff,
+                    )
                     dir_dual[mode].add_(directional_diff).clamp_(
                         min=-dir_dual_clip,
                         max=dir_dual_clip,
@@ -463,8 +467,8 @@ class UniversalStripeRemover:
 
     # --- Tensor utilities ---
 
+    @staticmethod
     def _to_tensor(
-        self,
         x: torch.Tensor | np.ndarray,
     ) -> torch.Tensor:
         if not isinstance(x, torch.Tensor):
