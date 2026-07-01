@@ -51,6 +51,21 @@ def test_adaptive_estimate_module_has_no_top_docstring_or_trivial_wrappers() -> 
     assert "def _estimate_mu2" not in source
 
 
+def test_adaptive_estimate_delegates_preprocess_directions_and_strength() -> None:
+    root = Path(__file__).resolve().parents[1] / "src" / "destripe" / "adaptive"
+    estimate_source = (root / "estimate.py").read_text(encoding="utf-8")
+
+    assert (root / "preprocess.py").exists()
+    assert (root / "directions.py").exists()
+    assert (root / "strength.py").exists()
+    assert "def _analysis_tensor" not in estimate_source
+    assert "def _high_pass" not in estimate_source
+    assert "def _direction_score" not in estimate_source
+    assert "def _select_directions" not in estimate_source
+    assert "def _distribution_concentration" not in estimate_source
+    assert "def _adaptive_strength" not in estimate_source
+
+
 def test_image_ops_module_exposes_process_size_helpers() -> None:
     from destripe import image_ops
 

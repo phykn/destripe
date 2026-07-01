@@ -380,18 +380,18 @@ class TestAdaptiveEstimator:
         assert p1.confidence == pytest.approx(p2.confidence)
 
     def test_direction_support_uses_relative_scores_without_cutoffs(self) -> None:
-        from destripe.adaptive import _select_directions
+        from destripe.adaptive.directions import select_directions
 
         scores = {0: 0.20, 1: 0.19, 2: -1.0, 3: -1.0, 4: -1.0}
 
-        assert _select_directions(scores) == (0, 1)
+        assert select_directions(scores) == (0, 1)
 
     def test_flat_direction_scores_do_not_select_all_modes(self) -> None:
-        from destripe.adaptive import _select_directions
+        from destripe.adaptive.directions import select_directions
 
         scores = {0: 1.0, 1: 1.0, 2: 1.0, 3: 1.0, 4: 1.0}
 
-        assert _select_directions(scores) == (0,)
+        assert select_directions(scores) == (0,)
 
     def test_fixed_directions_do_not_add_count_penalty(self) -> None:
         img = np.zeros((64, 64), dtype=np.float64)
