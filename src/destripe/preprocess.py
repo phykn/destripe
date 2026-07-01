@@ -29,13 +29,13 @@ def validate_process_size(process_size: int | None) -> int | None:
 
 
 def prepare_solver_gray(*, gray: np.ndarray, process_size: int | None) -> np.ndarray:
-    shape = solver_shape(gray.shape, process_size)
+    shape = compute_solver_shape(gray.shape, process_size)
     if shape == gray.shape:
         return gray
     return np.clip(resize_lanczos(gray, shape=shape), 0.0, 1.0)
 
 
-def solver_shape(
+def compute_solver_shape(
     shape: tuple[int, int], process_size: int | None
 ) -> tuple[int, int]:
     if process_size is None:
@@ -46,8 +46,8 @@ def solver_shape(
         return shape
     scale = process_size / long_edge
     if h >= w:
-        return process_size, _scaled_dim(w, scale)
-    return _scaled_dim(h, scale), process_size
+        return process_size, _scale_dim(w, scale)
+    return _scale_dim(h, scale), process_size
 
 
 def resize_lanczos(
@@ -67,7 +67,7 @@ def resize_lanczos(
     return np.asarray(resized, dtype=np.float64).reshape(shape)
 
 
-def _scaled_dim(dim: int, scale: float) -> int:
+def _scale_dim(dim: int, scale: float) -> int:
     if dim <= 1:
         return dim
     return max(2, int(np.floor(dim * scale + 0.5)))

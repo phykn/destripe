@@ -54,12 +54,17 @@ def test_adaptive_estimate_module_has_no_top_docstring_or_trivial_wrappers() -> 
 def test_adaptive_estimate_delegates_preprocess_directions_and_strength() -> None:
     root = Path(__file__).resolve().parents[1] / "src" / "destripe" / "adaptive"
     estimate_source = (root / "estimate.py").read_text(encoding="utf-8")
+    preprocess_source = (root / "preprocess.py").read_text(encoding="utf-8")
 
     assert (root / "preprocess.py").exists()
     assert (root / "directions.py").exists()
     assert (root / "strength.py").exists()
     assert "def _analysis_tensor" not in estimate_source
     assert "def _high_pass" not in estimate_source
+    assert "def make_analysis_tensor(" in preprocess_source
+    assert "def extract_high_pass(" in preprocess_source
+    assert "def analysis_tensor(" not in preprocess_source
+    assert "def high_pass(" not in preprocess_source
     assert "def _direction_score" not in estimate_source
     assert "def _select_directions" not in estimate_source
     assert "def _distribution_concentration" not in estimate_source
@@ -71,6 +76,8 @@ def test_adaptive_estimate_does_not_shadow_imported_modules() -> None:
     estimate_source = (root / "estimate.py").read_text(encoding="utf-8")
 
     assert "def _validate_fixed_directions(directions:" not in estimate_source
+    assert "def _validate_fixed_directions(" not in estimate_source
+    assert "def _validate_fixed_modes(" in estimate_source
 
 
 def test_adaptive_direction_names_describe_their_inputs_and_roles() -> None:
@@ -80,17 +87,31 @@ def test_adaptive_direction_names_describe_their_inputs_and_roles() -> None:
     strength_source = (root / "strength.py").read_text(encoding="utf-8")
 
     assert "def score_directions(high_pass:" in directions_source
-    assert "def score_weights(" in directions_source
-    assert "def selection_weights(" in directions_source
-    assert "def select_directions_from_weights(" in directions_source
+    assert "def make_score_weights(" in directions_source
+    assert "def make_selection_weights(" in directions_source
+    assert "def select_directions(" in directions_source
+    assert "def weigh_scores(" not in directions_source
+    assert "def weigh_selection(" not in directions_source
+    assert "def score_weights(" not in directions_source
+    assert "def selection_weights(" not in directions_source
+    assert "def select_directions_from_weights(" not in directions_source
+    assert "def _score_direction(" in directions_source
+    assert "def _standardize_scores(" in directions_source
+    assert "def _direction_score(" not in directions_source
+    assert "def _standardized_scores(" not in directions_source
     assert "def evidence_weights(" not in directions_source
     assert "def support_weights(" not in directions_source
     assert "def select_from_weights(" not in directions_source
-    assert "def select_directions(" not in directions_source
     assert "evidence_weights" not in estimate_source
     assert "support_weights" not in estimate_source
     assert "evidence_weights" not in strength_source
     assert "support_weights" not in strength_source
+    assert "def estimate_strength(" in strength_source
+    assert "def estimate_mu_and_confidence(" not in strength_source
+    assert "def _measure_concentration(" in strength_source
+    assert "def _measure_entropy(" in strength_source
+    assert "def _distribution_concentration(" not in strength_source
+    assert "def _distribution_entropy(" not in strength_source
 
 
 def test_adaptive_direction_score_has_no_self_normalizing_factor() -> None:
@@ -119,12 +140,15 @@ def test_preprocess_module_exposes_image_preprocess_helpers() -> None:
     assert (root / "preprocess.py").exists()
     assert not (root / "image_ops.py").exists()
     assert preprocess.validate_process_size(None) is None
-    assert preprocess.solver_shape((20, 30), 15) == (10, 15)
+    assert preprocess.compute_solver_shape((20, 30), 15) == (10, 15)
     assert callable(preprocess.prepare_solver_gray)
     assert callable(preprocess.resize_lanczos)
     assert callable(preprocess.rgb_to_luma)
     assert "def process_shape(" not in source
     assert "def solver_gray(" not in source
+    assert "def solver_shape(" not in source
+    assert "def _scaled_dim(" not in source
+    assert "def _scale_dim(" in source
     assert "def resize_2d(" not in source
     assert "mode:" not in source
     assert "unsupported resize mode" not in source
@@ -172,6 +196,16 @@ def test_core_is_package_with_remover_and_operators() -> None:
     assert "original_mu1" not in remover_source
     assert "original_mu2" not in remover_source
     assert "On CUDA" not in remover_source
+    assert "def _make_tile_mu_tensors(" in remover_source
+    assert "def _make_solver_mu_tensor(" in remover_source
+    assert "def _convert_to_tensor(" in remover_source
+    assert "def _make_zero_pair(" in remover_source
+    assert "def _make_cosine_window(" in remover_source
+    assert "def _tile_mu_tensors(" not in remover_source
+    assert "def _solver_mu_tensor(" not in remover_source
+    assert "def _to_tensor(" not in remover_source
+    assert "def _zero_pair(" not in remover_source
+    assert "def _cosine_window(" not in remover_source
 
 
 def test_core_package_does_not_use_section_marker_comments() -> None:

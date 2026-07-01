@@ -8,19 +8,19 @@ from . import constants
 
 def score_directions(high_pass: torch.Tensor) -> dict[int, float]:
     return {
-        mode: _direction_score(high_pass, mode=mode)
+        mode: _score_direction(high_pass, mode=mode)
         for mode in constants.ALL_DIRECTIONS
     }
 
 
-def score_weights(scores: dict[int, float]) -> np.ndarray:
+def make_score_weights(scores: dict[int, float]) -> np.ndarray:
     values = np.array(
         [scores[mode] for mode in constants.ALL_DIRECTIONS], dtype=np.float64
     )
     return _sparsemax(values)
 
 
-def selection_weights(scores: dict[int, float]) -> np.ndarray:
+def make_selection_weights(scores: dict[int, float]) -> np.ndarray:
     values = np.array(
         [scores[mode] for mode in constants.ALL_DIRECTIONS], dtype=np.float64
     )
@@ -28,10 +28,10 @@ def selection_weights(scores: dict[int, float]) -> np.ndarray:
         weights = np.zeros_like(values)
         weights[int(np.argmax(values))] = 1.0
         return weights
-    return _sparsemax(_standardized_scores(values))
+    return _sparsemax(_standardize_scores(values))
 
 
-def select_directions_from_weights(weights: np.ndarray) -> tuple[int, ...]:
+def select_directions(weights: np.ndarray) -> tuple[int, ...]:
     selected_modes = [
         mode
         for mode, weight in zip(constants.ALL_DIRECTIONS, weights)
@@ -56,7 +56,7 @@ def _offset_diff(t: torch.Tensor, row_step: int, col_step: int) -> torch.Tensor:
     return b - a
 
 
-def _direction_score(t: torch.Tensor, *, mode: int) -> float:
+def _score_direction(t: torch.Tensor, *, mode: int) -> float:
     parallel = _offset_diff(t, *constants.PARALLEL_OFFSETS[mode]).abs().reshape(-1)
     cross_offset = constants.CROSS_OFFSETS[mode]
     cross = _offset_diff(t, *cross_offset).abs().reshape(-1)
@@ -66,7 +66,7 @@ def _direction_score(t: torch.Tensor, *, mode: int) -> float:
     return (cross_q / cross_length) / parallel_q
 
 
-def _standardized_scores(values: np.ndarray) -> np.ndarray:
+def _standardize_scores(values: np.ndarray) -> np.ndarray:
     scale = float(values.std())
     if scale <= constants.EPS:
         return np.zeros_like(values)

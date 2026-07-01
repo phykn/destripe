@@ -5,8 +5,8 @@ import torch.nn.functional as F
 from . import constants
 
 
-def analysis_tensor(gray: np.ndarray) -> torch.Tensor:
-    normalized = _normalized_gray(gray)
+def make_analysis_tensor(gray: np.ndarray) -> torch.Tensor:
+    normalized = _normalize_gray(gray)
     t = torch.as_tensor(normalized, dtype=torch.float32)
     h, w = t.shape
     max_side = max(h, w)
@@ -21,7 +21,7 @@ def analysis_tensor(gray: np.ndarray) -> torch.Tensor:
     ).squeeze(0).squeeze(0)
 
 
-def high_pass(t: torch.Tensor) -> torch.Tensor:
+def extract_high_pass(t: torch.Tensor) -> torch.Tensor:
     h, w = t.shape
     if min(h, w) < 4:
         return t - t.mean()
@@ -37,7 +37,7 @@ def high_pass(t: torch.Tensor) -> torch.Tensor:
     return t - blur.squeeze(0).squeeze(0)
 
 
-def _normalized_gray(gray: np.ndarray) -> np.ndarray:
+def _normalize_gray(gray: np.ndarray) -> np.ndarray:
     arr = np.asarray(gray, dtype=np.float64)
     if arr.ndim != 2:
         raise ValueError("gray must have shape (H, W).")

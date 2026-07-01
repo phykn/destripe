@@ -53,7 +53,7 @@ class UniversalStripeRemover:
         """
         self._validate_solver_params(iterations=iterations, tol=tol)
 
-        input_tensor = self._to_tensor(x=image)
+        input_tensor = self._convert_to_tensor(x=image)
         self._validate_finite_tensor(name="image", x=input_tensor)
 
         if input_tensor.dim() not in {2, 3}:
@@ -101,7 +101,7 @@ class UniversalStripeRemover:
         self._validate_solver_params(iterations=iterations, tol=tol)
         self._validate_tiling_params(tiles=tiles, overlap=overlap)
 
-        input_tensor = self._to_tensor(x=image)
+        input_tensor = self._convert_to_tensor(x=image)
         self._validate_finite_tensor(name="image", x=input_tensor)
 
         if input_tensor.dim() == 2:
@@ -200,7 +200,7 @@ class UniversalStripeRemover:
                 verbose=verbose,
             )
         else:
-            tile_mu1, tile_mu2 = self._tile_mu_tensors(
+            tile_mu1, tile_mu2 = self._make_tile_mu_tensors(
                 tile_mus=validated_tile_mus,
                 ref=tile_tensor,
             )
@@ -214,9 +214,11 @@ class UniversalStripeRemover:
                 mu2=tile_mu2,
             )
 
-        blend_weight = self._cosine_window(h=tile_h, w=tile_w, margin=overlap_pixels).to(
-            device=cleaned_tiles.device, dtype=cleaned_tiles.dtype
-        )
+        blend_weight = self._make_cosine_window(
+            h=tile_h,
+            w=tile_w,
+            margin=overlap_pixels,
+        ).to(device=cleaned_tiles.device, dtype=cleaned_tiles.dtype)
         blended_canvas = torch.zeros(
             padded_h + 2 * overlap_pixels,
             padded_w + 2 * overlap_pixels,
@@ -239,7 +241,7 @@ class UniversalStripeRemover:
         ][:orig_h, :orig_w]
 
     @staticmethod
-    def _tile_mu_tensors(
+    def _make_tile_mu_tensors(
         tile_mus: Sequence[tuple[float, float]],
         ref: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -298,8 +300,16 @@ class UniversalStripeRemover:
 
         # Dual variables are sigma-scaled, so primal updates fold in tau*sigma.
         step_size = self.tau * self.sigma
-        mu1_tensor = self._solver_mu_tensor(value=mu1, fallback=self.mu1, ref=data)
-        mu2_tensor = self._solver_mu_tensor(value=mu2, fallback=self.mu2, ref=data)
+        mu1_tensor = self._make_solver_mu_tensor(
+            value=mu1,
+            fallback=self.mu1,
+            ref=data,
+        )
+        mu2_tensor = self._make_solver_mu_tensor(
+            value=mu2,
+            fallback=self.mu2,
+            ref=data,
+        )
         tv_dual_radius = mu1_tensor / self.sigma
         dir_dual_clip = 1.0 / self.sigma
         l2_dual_clip = mu2_tensor / self.sigma
@@ -311,8 +321,8 @@ class UniversalStripeRemover:
         clean = data.clone()
         stripe_components = [torch.zeros_like(input=data) for _ in self.directions]
 
-        grad_row, grad_row_bar = self._zero_pair(ref=data)
-        grad_col, grad_col_bar = self._zero_pair(ref=data)
+        grad_row, grad_row_bar = self._make_zero_pair(ref=data)
+        grad_col, grad_col_bar = self._make_zero_pair(ref=data)
 
         dir_dual = [torch.zeros_like(input=data) for _ in self.directions]
         dir_dual_bar = [torch.zeros_like(input=data) for _ in self.directions]
@@ -431,7 +441,7 @@ class UniversalStripeRemover:
         return clean.cpu()
 
     @staticmethod
-    def _solver_mu_tensor(
+    def _make_solver_mu_tensor(
         *,
         value: torch.Tensor | float | None,
         fallback: float,
@@ -494,7 +504,7 @@ class UniversalStripeRemover:
             raise ValueError(f"{name} must not contain NaN or Inf values.")
 
     @staticmethod
-    def _to_tensor(
+    def _convert_to_tensor(
         x: torch.Tensor | np.ndarray,
     ) -> torch.Tensor:
         if not isinstance(x, torch.Tensor):
@@ -504,7 +514,7 @@ class UniversalStripeRemover:
         return x.to(dtype=torch.float32)
 
     @staticmethod
-    def _zero_pair(
+    def _make_zero_pair(
         ref: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         z = torch.zeros_like(input=ref)
@@ -527,7 +537,7 @@ class UniversalStripeRemover:
         ).squeeze(0)
 
     @staticmethod
-    def _cosine_window(
+    def _make_cosine_window(
         h: int,
         w: int,
         margin: int,

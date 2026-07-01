@@ -384,17 +384,17 @@ class TestAdaptiveEstimator:
         from destripe.adaptive import directions
 
         scores = {0: 0.20, 1: 0.19, 2: -1.0, 3: -1.0, 4: -1.0}
-        weights = directions.selection_weights(scores)
+        weights = directions.make_selection_weights(scores)
 
-        assert directions.select_directions_from_weights(weights) == (0, 1)
+        assert directions.select_directions(weights) == (0, 1)
 
     def test_flat_direction_scores_do_not_select_all_modes(self) -> None:
         from destripe.adaptive import directions
 
         scores = {0: 1.0, 1: 1.0, 2: 1.0, 3: 1.0, 4: 1.0}
-        weights = directions.selection_weights(scores)
+        weights = directions.make_selection_weights(scores)
 
-        assert directions.select_directions_from_weights(weights) == (0,)
+        assert directions.select_directions(weights) == (0,)
 
     def test_fixed_directions_do_not_add_count_penalty(self) -> None:
         img = np.zeros((64, 64), dtype=np.float64)
