@@ -150,7 +150,7 @@ class UniversalStripeRemover:
             raise ValueError("image must have shape (H, W) or (1, H, W).")
 
         validated_tile_mus = None
-        if tile_mus is not None and tiles > 1:
+        if tile_mus is not None:
             validated_tile_mus = self._validate_tile_mus(
                 tile_mus=tile_mus,
                 expected_count=tiles * tiles,
@@ -161,12 +161,15 @@ class UniversalStripeRemover:
             return image_2d.clone()
 
         if tiles <= 1:
-            return self.process(
+            return self._process_single_tile(
                 image=image_2d,
                 iterations=iterations,
                 tol=tol,
                 proj=proj,
                 verbose=verbose,
+                tile_mu=validated_tile_mus[0]
+                if validated_tile_mus is not None
+                else None,
             )
 
         pad_bottom = (tiles - orig_h % tiles) % tiles
@@ -268,6 +271,39 @@ class UniversalStripeRemover:
             overlap_pixels : overlap_pixels + padded_h,
             overlap_pixels : overlap_pixels + padded_w,
         ][:orig_h, :orig_w]
+
+    def _process_single_tile(
+        self,
+        *,
+        image: torch.Tensor,
+        iterations: int,
+        tol: float,
+        proj: bool,
+        verbose: bool,
+        tile_mu: tuple[float, float] | None,
+    ) -> torch.Tensor:
+        if tile_mu is None:
+            return self.process(
+                image=image,
+                iterations=iterations,
+                tol=tol,
+                proj=proj,
+                verbose=verbose,
+            )
+
+        original_mu1, original_mu2 = self.mu1, self.mu2
+        try:
+            self.mu1 = float(tile_mu[0])
+            self.mu2 = float(tile_mu[1])
+            return self.process(
+                image=image,
+                iterations=iterations,
+                tol=tol,
+                proj=proj,
+                verbose=verbose,
+            )
+        finally:
+            self.mu1, self.mu2 = original_mu1, original_mu2
 
     @staticmethod
     def _validate_tile_mus(

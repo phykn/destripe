@@ -214,6 +214,18 @@ class TestProcessTiled:
                 tile_mus=tile_mus,  # type: ignore[arg-type]
             )
 
+    def test_tile_mus_validated_when_tiles_one(
+        self,
+        remover: UniversalStripeRemover,
+    ) -> None:
+        with pytest.raises(ValueError, match="tile_mus"):
+            remover.process_tiled(
+                image=torch.rand(8, 8),
+                tiles=1,
+                iterations=1,
+                tile_mus=[(np.nan, 0.0017)],
+            )
+
     @pytest.mark.parametrize(
         ("shape", "tile_mus"),
         [
@@ -300,6 +312,13 @@ class TestAdaptiveEstimator:
         scores = {0: 0.20, 1: 0.19, 2: -1.0, 3: -1.0, 4: -1.0}
 
         assert _select_directions(scores) == (0, 1)
+
+    def test_flat_direction_scores_do_not_select_all_modes(self) -> None:
+        from destripe.adaptive import _select_directions
+
+        scores = {0: 1.0, 1: 1.0, 2: 1.0, 3: 1.0, 4: 1.0}
+
+        assert _select_directions(scores) == (0,)
 
     def test_fixed_directions_do_not_add_count_penalty(self) -> None:
         img = np.zeros((64, 64), dtype=np.float64)

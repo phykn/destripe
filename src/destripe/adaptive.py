@@ -59,11 +59,12 @@ def estimate_adaptive_params(
         for mode in _ALL_DIRECTIONS
     }
     score_values = _score_values(scores)
-    distribution = _sparsemax(score_values)
-    directions = _select_directions(scores) if fixed is None else fixed
+    evidence_weights = _stripe_evidence_weights(score_values)
+    support_weights = _direction_support_weights(score_values)
+    directions = _directions_from_weights(support_weights) if fixed is None else fixed
 
-    strength = _distribution_concentration(distribution)
-    ambiguity = _distribution_entropy(distribution)
+    strength = _distribution_concentration(evidence_weights)
+    ambiguity = _distribution_entropy(evidence_weights)
     mu1 = _estimate_mu1(strength)
     mu2 = _estimate_mu2(strength=strength, ambiguity=ambiguity)
     confidence = strength * (1.0 - ambiguity)
@@ -195,18 +196,8 @@ def _direction_score(t: torch.Tensor, *, mode: int, contrast: float) -> float:
 
 
 def _select_directions(scores: dict[int, float]) -> tuple[int, ...]:
-    weights = _sparsemax(_standardized_scores(_score_values(scores)))
-    support = [
-        mode
-        for mode, weight in zip(_ALL_DIRECTIONS, weights)
-        if weight > _EPS
-    ]
-    if not support:
-        top_mode = max(scores, key=scores.__getitem__)
-        return (top_mode,)
-    return tuple(
-        sorted(support, key=lambda mode: (-weights[mode], mode))
-    )
+    values = _score_values(scores)
+    return _directions_from_weights(_direction_support_weights(values))
 
 
 def _score_values(scores: dict[int, float]) -> np.ndarray:
@@ -218,6 +209,31 @@ def _standardized_scores(values: np.ndarray) -> np.ndarray:
     if scale <= _EPS:
         return np.zeros_like(values)
     return (values - float(values.mean())) / scale
+
+
+def _stripe_evidence_weights(values: np.ndarray) -> np.ndarray:
+    return _sparsemax(values)
+
+
+def _direction_support_weights(values: np.ndarray) -> np.ndarray:
+    if float(values.max() - values.min()) <= _EPS:
+        weights = np.zeros_like(values)
+        weights[int(np.argmax(values))] = 1.0
+        return weights
+    return _sparsemax(_standardized_scores(values))
+
+
+def _directions_from_weights(weights: np.ndarray) -> tuple[int, ...]:
+    support = [
+        mode
+        for mode, weight in zip(_ALL_DIRECTIONS, weights)
+        if weight > _EPS
+    ]
+    if not support:
+        return (int(np.argmax(weights)),)
+    return tuple(
+        sorted(support, key=lambda mode: (-weights[mode], mode))
+    )
 
 
 def _sparsemax(values: np.ndarray) -> np.ndarray:
