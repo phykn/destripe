@@ -4,6 +4,7 @@ import torch
 
 import destripe.ops as destripe_ops
 from destripe import UniversalStripeRemover, destripe
+from destripe.adaptive import estimate_adaptive_params
 
 
 @pytest.fixture()
@@ -170,6 +171,96 @@ class TestProcessTiled:
     def test_invalid_overlap(self, remover: UniversalStripeRemover) -> None:
         with pytest.raises(ValueError, match="overlap"):
             remover.process_tiled(image=torch.rand(32, 32), tiles=2, overlap=-1)
+
+
+class TestAdaptiveEstimator:
+    def test_vertical_stripes_select_mode_zero(self) -> None:
+        img = np.zeros((64, 64), dtype=np.float64)
+        img[:, 12] = 1.0
+        img[:, 32] = 0.8
+        params = estimate_adaptive_params(img)
+        assert params.directions[0] == 0
+        assert 0.10 <= params.mu1 <= 0.50
+        assert 0.0017 <= params.mu2 <= 0.017
+
+    def test_estimator_is_deterministic(self) -> None:
+        rng = np.random.default_rng(14)
+        img = rng.random((48, 48))
+        p1 = estimate_adaptive_params(img)
+        p2 = estimate_adaptive_params(img)
+        assert p1 == p2
+
+    def test_estimator_normalizes_affine_intensity_scale(self) -> None:
+        rng = np.random.default_rng(16)
+        img = rng.random((48, 48))
+        img[:, 10] += 0.7
+        img = np.clip(img, 0.0, 1.0)
+
+        p1 = estimate_adaptive_params(img)
+        p2 = estimate_adaptive_params(img * 100.0 + 20.0)
+
+        assert p1.directions == p2.directions
+        assert p1.mu1 == pytest.approx(p2.mu1)
+        assert p1.mu2 == pytest.approx(p2.mu2)
+        assert p1.confidence == pytest.approx(p2.confidence)
+
+    def test_fixed_directions_drive_mu2_ambiguity(self) -> None:
+        img = np.zeros((64, 64), dtype=np.float64)
+        img[:, 12] = 1.0
+        img[:, 32] = 0.8
+
+        single = estimate_adaptive_params(img, fixed_directions=(0,))
+        multiple = estimate_adaptive_params(img, fixed_directions=(0, 1))
+
+        assert single.directions == (0,)
+        assert multiple.directions == (0, 1)
+        assert single.mu2 == pytest.approx(0.0017)
+        assert multiple.mu2 > single.mu2
+
+    @pytest.mark.parametrize("shape", [(1, 1), (3, 8), (8, 3)])
+    def test_estimator_handles_small_arrays(self, shape: tuple[int, int]) -> None:
+        img = np.random.default_rng(17).random(shape)
+        params = estimate_adaptive_params(img)
+
+        assert params.directions
+        assert 0.10 <= params.mu1 <= 0.50
+        assert 0.0017 <= params.mu2 <= 0.017
+
+    @pytest.mark.parametrize(
+        "fixed_directions",
+        [
+            (),
+            (0, 0),
+            (-1,),
+            (5,),
+            (1.5,),
+            ("0",),
+            (True,),
+        ],
+    )
+    def test_invalid_fixed_directions(self, fixed_directions: object) -> None:
+        with pytest.raises(ValueError, match="directions"):
+            estimate_adaptive_params(
+                np.random.default_rng(18).random((8, 8)),
+                fixed_directions=fixed_directions,  # type: ignore[arg-type]
+            )
+
+    def test_tile_mu_smoothing_preserves_shape(self) -> None:
+        from destripe.adaptive import smooth_tile_mus
+
+        mus = np.array(
+            [
+                [[0.10, 0.0017], [0.50, 0.017]],
+                [[0.33, 0.0030], [0.40, 0.007]],
+            ],
+            dtype=np.float64,
+        )
+        smoothed = smooth_tile_mus(mus)
+        assert smoothed.shape == mus.shape
+        assert np.all(smoothed[..., 0] >= 0.10)
+        assert np.all(smoothed[..., 0] <= 0.50)
+        assert np.all(smoothed[..., 1] >= 0.0017)
+        assert np.all(smoothed[..., 1] <= 0.017)
 
 
 class TestDestripe:
