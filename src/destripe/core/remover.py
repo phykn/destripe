@@ -111,9 +111,9 @@ class UniversalStripeRemover:
         else:
             raise ValueError("image must have shape (H, W) or (1, H, W).")
 
-        validated_tile_mus = None
+        tile_mu_values = None
         if tile_mus is not None:
-            validated_tile_mus = self._validate_tile_mus(
+            tile_mu_values = self._validate_tile_mus(
                 tile_mus=tile_mus,
                 expected_count=tiles * tiles,
             )
@@ -123,7 +123,7 @@ class UniversalStripeRemover:
             return image_2d.clone()
 
         if tiles <= 1:
-            if validated_tile_mus is None:
+            if tile_mu_values is None:
                 return self.process(
                     image=image_2d,
                     iterations=iterations,
@@ -132,7 +132,7 @@ class UniversalStripeRemover:
                     verbose=verbose,
                 )
 
-            tile_mu1, tile_mu2 = validated_tile_mus[0]
+            tile_mu1, tile_mu2 = tile_mu_values[0]
             return self._solve(
                 data=image_2d.unsqueeze(0),
                 iterations=iterations,
@@ -191,7 +191,7 @@ class UniversalStripeRemover:
                 f"{tile_h}x{tile_w}, overlap={overlap_pixels}"
             )
 
-        if tile_mus is None:
+        if tile_mu_values is None:
             cleaned_tiles = self.process(
                 image=tile_tensor,
                 iterations=iterations,
@@ -201,7 +201,7 @@ class UniversalStripeRemover:
             )
         else:
             tile_mu1, tile_mu2 = self._make_tile_mu_tensors(
-                tile_mus=validated_tile_mus,
+                tile_mus=tile_mu_values,
                 ref=tile_tensor,
             )
             cleaned_tiles = self._solve(
@@ -475,6 +475,7 @@ class UniversalStripeRemover:
 
     @staticmethod
     def _validate_directions(directions: Sequence[int] | None) -> tuple[int, ...]:
+        message = "directions must contain integers in the range 0..4."
         if directions is None:
             return DIRECTION_MODES
         if not isinstance(directions, Sequence):
@@ -491,9 +492,9 @@ class UniversalStripeRemover:
             raise ValueError("directions must not be empty.")
         for mode in values:
             if not isinstance(mode, int) or isinstance(mode, bool):
-                raise ValueError("directions must contain integers in the range 0..4.")
+                raise ValueError(message)
             if mode not in DIRECTION_MODES:
-                raise ValueError("directions must contain integers in the range 0..4.")
+                raise ValueError(message)
         if len(set(values)) != len(values):
             raise ValueError("directions must not contain duplicates.")
         return values

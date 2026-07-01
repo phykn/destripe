@@ -14,16 +14,11 @@ def score_directions(high_pass: torch.Tensor) -> dict[int, float]:
 
 
 def make_score_weights(scores: dict[int, float]) -> np.ndarray:
-    values = np.array(
-        [scores[mode] for mode in constants.ALL_DIRECTIONS], dtype=np.float64
-    )
-    return _sparsemax(values)
+    return _sparsemax(_make_score_array(scores))
 
 
 def make_selection_weights(scores: dict[int, float]) -> np.ndarray:
-    values = np.array(
-        [scores[mode] for mode in constants.ALL_DIRECTIONS], dtype=np.float64
-    )
+    values = _make_score_array(scores)
     if float(values.max() - values.min()) <= constants.EPS:
         weights = np.zeros_like(values)
         weights[int(np.argmax(values))] = 1.0
@@ -40,6 +35,12 @@ def select_directions(weights: np.ndarray) -> tuple[int, ...]:
     if not selected_modes:
         return (int(np.argmax(weights)),)
     return tuple(sorted(selected_modes, key=lambda mode: (-weights[mode], mode)))
+
+
+def _make_score_array(scores: dict[int, float]) -> np.ndarray:
+    return np.array(
+        [scores[mode] for mode in constants.ALL_DIRECTIONS], dtype=np.float64
+    )
 
 
 def _offset_diff(t: torch.Tensor, row_step: int, col_step: int) -> torch.Tensor:

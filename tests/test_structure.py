@@ -89,6 +89,11 @@ def test_adaptive_direction_names_describe_their_inputs_and_roles() -> None:
     assert "def score_directions(high_pass:" in directions_source
     assert "def make_score_weights(" in directions_source
     assert "def make_selection_weights(" in directions_source
+    assert "def _make_score_array(" in directions_source
+    assert (
+        directions_source.count("[scores[mode] for mode in constants.ALL_DIRECTIONS]")
+        == 1
+    )
     assert "def select_directions(" in directions_source
     assert "def weigh_scores(" not in directions_source
     assert "def weigh_selection(" not in directions_source
@@ -128,6 +133,9 @@ def test_adaptive_preprocess_validates_shape_before_tensor_conversion() -> None:
     preprocess_source = (root / "preprocess.py").read_text(encoding="utf-8")
 
     assert "if t.dim() != 2:" not in preprocess_source
+    assert "t = torch.as_tensor" not in preprocess_source
+    assert "lo = " not in preprocess_source
+    assert "hi = " not in preprocess_source
     assert 'raise ValueError("gray must have shape (H, W).")' in preprocess_source
 
 
@@ -195,6 +203,7 @@ def test_core_is_package_with_remover_and_operators() -> None:
     assert "def _process_single_tile(" not in remover_source
     assert "original_mu1" not in remover_source
     assert "original_mu2" not in remover_source
+    assert "validated_tile_mus" not in remover_source
     assert "On CUDA" not in remover_source
     assert "def _make_tile_mu_tensors(" in remover_source
     assert "def _make_solver_mu_tensor(" in remover_source

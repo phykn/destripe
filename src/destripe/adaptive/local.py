@@ -13,12 +13,12 @@ def estimate_tile_mus(
 ) -> list[tuple[float, float]]:
     if tiles <= 1:
         return []
-    h, w = gray.shape
-    pad_h = (tiles - h % tiles) % tiles
-    pad_w = (tiles - w % tiles) % tiles
+    height, width = gray.shape
+    pad_h = (tiles - height % tiles) % tiles
+    pad_w = (tiles - width % tiles) % tiles
     pad_mode = (
         "edge"
-        if ((pad_h > 0 and h <= 1) or (pad_w > 0 and w <= 1))
+        if ((pad_h > 0 and height <= 1) or (pad_w > 0 and width <= 1))
         else "reflect"
     )
     padded = np.pad(gray, ((0, pad_h), (0, pad_w)), mode=pad_mode)
@@ -26,13 +26,13 @@ def estimate_tile_mus(
     tile_w = padded.shape[1] // tiles
     tile_grid = padded.reshape(tiles, tile_h, tiles, tile_w).swapaxes(1, 2)
 
-    mus = np.empty((tiles * tiles, 2), dtype=np.float64)
+    tile_mu_pairs = np.empty((tiles * tiles, 2), dtype=np.float64)
     for index, tile in enumerate(tile_grid.reshape(-1, tile_h, tile_w)):
         params = estimate_adaptive_params(tile, fixed_directions=directions)
-        mus[index] = (params.mu1, params.mu2)
+        tile_mu_pairs[index] = (params.mu1, params.mu2)
 
-    mus = mus.reshape(tiles, tiles, 2)
-    smoothed = smooth_tile_mus(mus)
+    tile_mu_grid = tile_mu_pairs.reshape(tiles, tiles, 2)
+    smoothed = smooth_tile_mus(tile_mu_grid)
     return [
         (float(mu1), float(mu2))
         for mu1, mu2 in smoothed.reshape(-1, 2)

@@ -46,19 +46,20 @@ def estimate_adaptive_params(
 
 
 def _validate_fixed_modes(requested: object) -> tuple[int, ...]:
+    message = "directions must be a non-empty sequence of unique modes 0..4."
     if not isinstance(requested, (tuple, list)):
-        raise ValueError("directions must be a non-empty sequence of unique modes 0..4.")
+        raise ValueError(message)
 
     normalized: list[int] = []
     seen: set[int] = set()
     for mode in requested:
         if isinstance(mode, bool) or not isinstance(mode, int):
-            raise ValueError("directions must be a non-empty sequence of unique modes 0..4.")
+            raise ValueError(message)
         if mode not in constants.ALL_DIRECTIONS or mode in seen:
-            raise ValueError("directions must be a non-empty sequence of unique modes 0..4.")
+            raise ValueError(message)
         normalized.append(mode)
         seen.add(mode)
 
     if not normalized:
-        raise ValueError("directions must be a non-empty sequence of unique modes 0..4.")
+        raise ValueError(message)
     return tuple(normalized)

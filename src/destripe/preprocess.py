@@ -40,14 +40,14 @@ def compute_solver_shape(
 ) -> tuple[int, int]:
     if process_size is None:
         return shape
-    h, w = shape
-    long_edge = max(h, w)
+    height, width = shape
+    long_edge = max(height, width)
     if process_size >= long_edge:
         return shape
     scale = process_size / long_edge
-    if h >= w:
-        return process_size, _scale_dim(w, scale)
-    return _scale_dim(h, scale), process_size
+    if height >= width:
+        return process_size, _scale_dim(width, scale)
+    return _scale_dim(height, scale), process_size
 
 
 def resize_lanczos(

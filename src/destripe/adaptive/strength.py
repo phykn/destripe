@@ -12,17 +12,19 @@ def estimate_strength(
 ) -> tuple[float, float, float]:
     score_strength = _measure_concentration(score_weights)
     selection_strength = _measure_concentration(selection_weights)
-    strength = math.sqrt(score_strength * selection_strength)
+    overall_strength = math.sqrt(score_strength * selection_strength)
     ambiguity = _measure_entropy(score_weights)
+    mu2_strength = overall_strength * ambiguity
 
     mu1 = float(
-        constants.MU1_MIN * (1.0 - strength) + constants.MU1_MAX * strength
+        constants.MU1_MIN * (1.0 - overall_strength)
+        + constants.MU1_MAX * overall_strength
     )
     log_mu2 = (
-        math.log(constants.MU2_MIN) * (1.0 - strength * ambiguity)
-        + math.log(constants.MU2_MAX) * strength * ambiguity
+        math.log(constants.MU2_MIN) * (1.0 - mu2_strength)
+        + math.log(constants.MU2_MAX) * mu2_strength
     )
-    confidence = strength * (1.0 - ambiguity)
+    confidence = overall_strength * (1.0 - ambiguity)
     return mu1, float(math.exp(log_mu2)), confidence
 
 
