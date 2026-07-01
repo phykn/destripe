@@ -532,7 +532,7 @@ class TestDestripe:
         assert result.shape == img.shape
         assert result.dtype == img.dtype
 
-    def test_process_scale_runs_solver_on_scaled_grayscale(
+    def test_process_size_runs_solver_on_resized_grayscale(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -549,13 +549,67 @@ class TestDestripe:
         monkeypatch.setattr(destripe_ops, "UniversalStripeRemover", FakeRemover)
 
         img = np.linspace(0.0, 1.0, 16 * 20, dtype=np.float64).reshape(16, 20)
-        result = destripe(img, process_scale=0.5, iterations=1, proj=False)
+        result = destripe(img, process_size=10, iterations=1, proj=False)
 
         assert calls == [(8, 10)]
         assert result.shape == img.shape
         assert np.allclose(result, img - 0.25)
 
-    def test_process_scale_subtracts_scaled_rgb_stripe(
+    def test_process_size_none_uses_original_resolution(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        calls = []
+
+        class FakeRemover:
+            def __init__(self, **_: object) -> None:
+                pass
+
+            def process_tiled(self, image: np.ndarray, **_: object) -> torch.Tensor:
+                calls.append(image.shape)
+                return torch.as_tensor(image)
+
+        monkeypatch.setattr(destripe_ops, "UniversalStripeRemover", FakeRemover)
+
+        img = np.random.default_rng(22).random((100, 100))
+        result = destripe(img, process_size=None, iterations=1)
+
+        assert calls == [(100, 100)]
+        assert result.shape == img.shape
+        assert np.allclose(result, img)
+
+    def test_process_size_larger_than_input_uses_original_resolution(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        calls = []
+
+        class FakeRemover:
+            def __init__(self, **_: object) -> None:
+                pass
+
+            def process_tiled(self, image: np.ndarray, **_: object) -> torch.Tensor:
+                calls.append(image.shape)
+                return torch.as_tensor(image)
+
+        monkeypatch.setattr(destripe_ops, "UniversalStripeRemover", FakeRemover)
+
+        img = np.random.default_rng(24).random((80, 100))
+        result = destripe(img, process_size=128, iterations=1)
+
+        assert calls == [(80, 100)]
+        assert result.shape == img.shape
+        assert np.allclose(result, img)
+
+    def test_resize_2d_supports_lanczos_mode(self) -> None:
+        img = np.random.default_rng(23).random((11, 13))
+        result = destripe_ops._resize_2d(img, size=(7, 9), mode="lanczos")
+
+        assert result.shape == (7, 9)
+        assert result.dtype == np.float64
+        assert np.isfinite(result).all()
+
+    def test_process_size_subtracts_resized_rgb_stripe(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -569,12 +623,12 @@ class TestDestripe:
         monkeypatch.setattr(destripe_ops, "UniversalStripeRemover", FakeRemover)
 
         img = np.linspace(0.0, 1.0, 12 * 18 * 3, dtype=np.float64).reshape(12, 18, 3)
-        result = destripe(img, process_scale=0.5, iterations=1, proj=False)
+        result = destripe(img, process_size=9, iterations=1, proj=False)
 
         assert result.shape == img.shape
         assert np.allclose(result, img - 0.125)
 
-    def test_adaptive_process_scale_estimates_scaled_gray(
+    def test_adaptive_process_size_estimates_resized_gray(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -603,17 +657,17 @@ class TestDestripe:
         monkeypatch.setattr(destripe_ops, "UniversalStripeRemover", FakeRemover)
 
         img = np.random.default_rng(20).random((20, 30))
-        result = destripe(img, adaptive=True, process_scale=0.5, iterations=1)
+        result = destripe(img, adaptive=True, process_size=15, iterations=1)
 
         assert result.shape == img.shape
         assert calls == [((10, 15), None)]
 
-    @pytest.mark.parametrize("process_scale", [0, -0.1, 1.1, float("nan"), True])
-    def test_invalid_process_scale(self, process_scale: object) -> None:
-        with pytest.raises(ValueError, match="process_scale"):
+    @pytest.mark.parametrize("process_size", [0, -1, 1.1, float("nan"), True])
+    def test_invalid_process_size(self, process_size: object) -> None:
+        with pytest.raises(ValueError, match="process_size"):
             destripe(
                 np.random.default_rng(21).random((8, 8)),
-                process_scale=process_scale,  # type: ignore[arg-type]
+                process_size=process_size,  # type: ignore[arg-type]
             )
 
     @pytest.mark.parametrize("shape", [(1, 8), (3, 8)])

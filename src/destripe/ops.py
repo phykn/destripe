@@ -2,9 +2,9 @@ from collections.abc import Sequence
 import numbers
 import warnings
 
+import cv2
 import numpy as np
 import torch
-import torch.nn.functional as F
 
 from .adaptive import estimate_adaptive_params, smooth_tile_mus
 from .core import UniversalStripeRemover
@@ -60,7 +60,7 @@ def destripe(
     tol: float = 1e-5,
     tiles: int = 1,
     overlap: int = 64,
-    process_scale: float = 1.0,
+    process_size: int | None = None,
     proj: bool = True,
     device: torch.device | str | None = None,
     verbose: bool = False,
@@ -83,10 +83,11 @@ def destripe(
         tol: Relative convergence tolerance. Must be non-negative.
         tiles: Number of tiles per image side. Must be positive.
         overlap: Overlap width between neighboring tiles. Must be non-negative.
-        process_scale: Solver resolution scale in ``(0, 1]``. Values below
-            ``1`` run the solver on a resized grayscale image, upsample only
-            the estimated stripe component, and subtract it from the original
-            resolution image.
+        process_size: Optional long-edge size for the solver image. ``None``
+            keeps the original resolution. Integers smaller than the input
+            long edge resize the grayscale/luminance solver image while
+            preserving aspect ratio, then upsample only the estimated stripe
+            component and subtract it from the original-resolution image.
         proj: Whether to project the clean component onto ``[0, 1]``.
         device: Computation device for the underlying torch solver.
         verbose: Whether to print iteration progress.
@@ -108,7 +109,7 @@ def destripe(
     if not np.isfinite(input_array).all():
         raise ValueError("image must not contain NaN or Inf values.")
 
-    process_scale_value = _validate_process_scale(process_scale)
+    process_size_value = _validate_process_size(process_size)
     manual_mu1 = mu1 is not None
     manual_mu2 = mu2 is not None
     manual_directions = directions is not None
@@ -147,7 +148,7 @@ def destripe(
             overlap=overlap,
             proj=proj,
             verbose=verbose,
-            process_scale=process_scale_value,
+            process_size=process_size_value,
         )
     elif normalized.ndim == 3 and normalized.shape[2] in {1, 3}:
         if normalized.shape[2] == 3:
@@ -172,7 +173,7 @@ def destripe(
             overlap=overlap,
             proj=proj,
             verbose=verbose,
-            process_scale=process_scale_value,
+            process_size=process_size_value,
         )
         stripe = gray - clean_gray
         clean = normalized - stripe[..., np.newaxis]
@@ -207,9 +208,9 @@ def _destripe_grayscale(
     overlap: int,
     proj: bool,
     verbose: bool,
-    process_scale: float,
+    process_size: int | None,
 ) -> np.ndarray:
-    solver_gray = _solver_gray(gray=gray, process_scale=process_scale)
+    solver_gray = _solver_gray(gray=gray, process_size=process_size)
     remover = _make_remover(
         gray=solver_gray,
         adaptive=adaptive,
@@ -241,7 +242,7 @@ def _destripe_grayscale(
         return solver_clean
 
     stripe = solver_gray - solver_clean
-    full_stripe = _resize_2d(stripe, size=gray.shape, mode="bilinear")
+    full_stripe = _resize_2d(stripe, size=gray.shape, mode="lanczos")
     clean = gray - full_stripe
     if proj:
         clean = np.clip(clean, 0.0, 1.0)
@@ -297,34 +298,43 @@ def _run_grayscale(
     return out.numpy()
 
 
-def _validate_process_scale(process_scale: float) -> float:
-    if (
-        isinstance(process_scale, bool)
-        or not isinstance(process_scale, numbers.Real)
-        or not np.isfinite(process_scale)
-    ):
-        raise ValueError("process_scale must be a finite number in the range (0, 1].")
-    value = float(process_scale)
-    if value <= 0.0 or value > 1.0:
-        raise ValueError("process_scale must be a finite number in the range (0, 1].")
+def _validate_process_size(process_size: int | None) -> int | None:
+    if process_size is None:
+        return None
+    if isinstance(process_size, bool) or not isinstance(process_size, numbers.Integral):
+        raise ValueError("process_size must be None or an integer greater than 1.")
+    value = int(process_size)
+    if value <= 1:
+        raise ValueError("process_size must be None or an integer greater than 1.")
     return value
 
 
-def _solver_gray(*, gray: np.ndarray, process_scale: float) -> np.ndarray:
-    size = _scaled_size(gray.shape, process_scale)
+def _solver_gray(*, gray: np.ndarray, process_size: int | None) -> np.ndarray:
+    size = _process_shape(gray.shape, process_size)
     if size == gray.shape:
         return gray
-    return _resize_2d(gray, size=size, mode="area")
+    return np.clip(_resize_2d(gray, size=size, mode="lanczos"), 0.0, 1.0)
 
 
-def _scaled_size(shape: tuple[int, int], process_scale: float) -> tuple[int, int]:
-    return tuple(_scaled_dim(dim, process_scale) for dim in shape)
+def _process_shape(
+    shape: tuple[int, int], process_size: int | None
+) -> tuple[int, int]:
+    if process_size is None:
+        return shape
+    h, w = shape
+    long_edge = max(h, w)
+    if process_size >= long_edge:
+        return shape
+    scale = process_size / long_edge
+    if h >= w:
+        return process_size, _scaled_dim(w, scale)
+    return _scaled_dim(h, scale), process_size
 
 
-def _scaled_dim(dim: int, process_scale: float) -> int:
+def _scaled_dim(dim: int, scale: float) -> int:
     if dim <= 1:
         return dim
-    return min(dim, max(2, int(round(dim * process_scale))))
+    return max(2, int(np.floor(dim * scale + 0.5)))
 
 
 def _resize_2d(
@@ -336,11 +346,13 @@ def _resize_2d(
     if image.shape == size:
         return np.asarray(image, dtype=np.float64).copy()
 
-    tensor = torch.as_tensor(image, dtype=torch.float64).reshape(
-        1, 1, image.shape[0], image.shape[1]
+    if mode != "lanczos":
+        raise ValueError(f"unsupported resize mode: {mode}")
+
+    array = np.asarray(image, dtype=np.float64)
+    resized = cv2.resize(
+        array,
+        dsize=(size[1], size[0]),
+        interpolation=cv2.INTER_LANCZOS4,
     )
-    kwargs: dict[str, object] = {}
-    if mode == "bilinear":
-        kwargs["align_corners"] = False
-    resized = F.interpolate(tensor, size=size, mode=mode, **kwargs)
-    return resized.reshape(size).numpy()
+    return np.asarray(resized, dtype=np.float64).reshape(size)

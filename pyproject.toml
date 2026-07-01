@@ -22,6 +22,7 @@ classifiers = [
 keywords = ["destripe", "stripe-removal", "image-processing", "denoising"]
 dependencies = [
     "numpy",
+    "opencv-python-headless",
     "torch",
 ]
 

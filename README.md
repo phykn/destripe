@@ -10,7 +10,7 @@ PDHG-based stripe-noise removal for NumPy images, backed by PyTorch. The solver 
 - Preserves input shape and dtype; integer outputs are clipped to their dtype range.
 - For RGB inputs, estimates stripes on Rec. 601 luminance and subtracts them from each channel.
 - Supports `n x n` tiled processing with cosine-blended overlap for large images.
-- Optional `process_scale` runs the solver at lower resolution and subtracts only the upsampled stripe component from the original image.
+- Optional `process_size` runs the solver at a target long-edge size and subtracts only the upsampled stripe component from the original image.
 - Uses CUDA when available if `device=None`; otherwise falls back to CPU.
 
 ## Quick Start
@@ -62,23 +62,24 @@ Tile-local `mu` values are processed as a batch, so `tiles > 1` does not force a
 separate solver run per tile.
 
 ## Coarse Processing
-Use `process_scale < 1` when the stripe field is broad enough to estimate at a
-lower resolution. The solver runs on the resized luminance/grayscale image,
-then only the estimated stripe component is upsampled and subtracted from the
-original-resolution input.
+Use `process_size` when the stripe field is broad enough to estimate at a lower
+resolution. The solver resizes the luminance/grayscale image so its long edge
+matches `process_size`, preserves aspect ratio, then only upsamples the
+estimated stripe component and subtracts it from the original-resolution input.
+`process_size=None` keeps the original resolution.
 
 ```python
 clean = destripe(
     image,
     adaptive=True,
-    process_scale=0.5,  # 1.0 keeps the original resolution
+    process_size=512,  # None keeps the original resolution
     iterations=500,
 )
 ```
 
 This is most useful for large images with smooth curtain-like artifacts. Very
 thin one-pixel stripes can be weakened by downsampling; keep
-`process_scale=1.0` for those cases.
+`process_size=None` for those cases.
 
 ## Manual Mode
 Manual mode is useful when the stripe direction and regularization strength are
@@ -106,7 +107,7 @@ When `adaptive=False`, `directions=None` keeps all five modes active.
 - `tol` (default `1e-5`): relative-change tolerance for early stopping, checked every 20 iterations.
 - `tiles` (default `1`): number of tiles per side. Use values greater than `1` when the image does not fit in memory or stripes are locally non-stationary.
 - `overlap` (default `64`): requested blend width in pixels. The solver clamps it to at most one quarter of each tile dimension.
-- `process_scale` (default `1.0`): solver resolution scale in `(0, 1]`. Values below `1` estimate the stripe field at lower resolution and subtract the upsampled stripe from the original image.
+- `process_size` (default `None`): optional solver long-edge size. `None` keeps the original resolution; an integer smaller than the input long edge estimates the stripe field at that size and subtracts the upsampled stripe from the original image.
 - `device` (default `None`): `"cpu"`, `"cuda"`, a `torch.device`, or `None` to auto-select CUDA when available.
 - `proj` (default `True`): project the normalized clean component onto `[0, 1]`.
 - `verbose` (default `False`): print iteration progress.
