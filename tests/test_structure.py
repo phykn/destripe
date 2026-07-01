@@ -40,6 +40,16 @@ def test_adaptive_constants_live_in_constants_module() -> None:
     assert not hasattr(estimate, "_MU1_MIN")
 
 
+def test_adaptive_modules_import_constants_directly() -> None:
+    root = Path(__file__).resolve().parents[1] / "src" / "destripe" / "adaptive"
+
+    for path in root.glob("*.py"):
+        if path.name == "constants.py":
+            continue
+        source = path.read_text(encoding="utf-8")
+        assert "from . import constants" not in source
+
+
 def test_adaptive_estimate_module_has_no_top_docstring_or_trivial_wrappers() -> None:
     root = Path(__file__).resolve().parents[1] / "src" / "destripe" / "adaptive"
     source = (root / "estimate.py").read_text(encoding="utf-8")
@@ -91,7 +101,7 @@ def test_adaptive_direction_names_describe_their_inputs_and_roles() -> None:
     assert "def make_selection_weights(" in directions_source
     assert "def _make_score_array(" in directions_source
     assert (
-        directions_source.count("[scores[mode] for mode in constants.ALL_DIRECTIONS]")
+        directions_source.count("[scores[mode] for mode in ALL_DIRECTIONS]")
         == 1
     )
     assert "def select_directions(" in directions_source
@@ -117,6 +127,27 @@ def test_adaptive_direction_names_describe_their_inputs_and_roles() -> None:
     assert "def _measure_entropy(" in strength_source
     assert "def _distribution_concentration(" not in strength_source
     assert "def _distribution_entropy(" not in strength_source
+    assert "def _average_weighted(" in strength_source
+    assert "def _weighted_mean(" not in strength_source
+
+
+def test_adaptive_refine_and_stripe_names_are_short_verbs() -> None:
+    root = Path(__file__).resolve().parents[1] / "src" / "destripe" / "adaptive"
+    refine_source = (root / "refine.py").read_text(encoding="utf-8")
+    stripe_source = (root / "stripe.py").read_text(encoding="utf-8")
+
+    assert "def refine_clean(" in refine_source
+    assert "def _choose_alpha(" not in refine_source
+    assert "def _minimize(" not in refine_source
+    assert "def _score(" not in refine_source
+    assert "def project(" in stripe_source
+    assert "def measure_shrinkage(" in stripe_source
+    assert "def measure_reliability(" not in stripe_source
+    assert "def measure_parallel(" in stripe_source
+    assert "def measure_tv(" in stripe_source
+    assert "def stripe_image(" not in stripe_source
+    assert "def parallel_cost(" not in stripe_source
+    assert "def tv_cost(" not in stripe_source
 
 
 def test_adaptive_direction_score_has_no_self_normalizing_factor() -> None:

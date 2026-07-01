@@ -329,16 +329,21 @@ class TestProcessTiled:
 
 class TestAdaptiveEstimator:
     def test_vertical_stripes_select_mode_zero(self) -> None:
+        from destripe.adaptive import constants
+
         img = np.zeros((64, 64), dtype=np.float64)
         img[:, 12] = 1.0
         img[:, 32] = 0.8
         params = estimate_adaptive_params(img)
         assert params.directions[0] == 0
-        assert params.mu1 >= 0.33
+        assert params.mu1 == pytest.approx(constants.MU1_MIN)
+        assert params.mu2 <= 0.003
         assert 0.10 <= params.mu1 <= 0.50
         assert 0.0017 <= params.mu2 <= 0.017
 
-    def test_faint_coherent_stripes_get_default_strength(self) -> None:
+    def test_faint_coherent_stripes_keep_tv_weight_conservative(self) -> None:
+        from destripe.adaptive import constants
+
         rng = np.random.default_rng(1234)
         h = w = 128
         x = np.linspace(0, 1, w).reshape(1, -1)
@@ -357,7 +362,21 @@ class TestAdaptiveEstimator:
         params = estimate_adaptive_params(img)
 
         assert params.directions[0] == 0
-        assert params.mu1 >= 0.33
+        assert params.mu1 == pytest.approx(constants.MU1_MIN)
+        assert params.mu2 < 0.007
+
+    def test_directional_texture_uses_sparse_stripe_guard(self) -> None:
+        h = w = 128
+        x = np.linspace(0, 1, w).reshape(1, -1)
+        y = np.linspace(0, 1, h).reshape(-1, 1)
+        img = 0.5 + 0.05 * np.sin(2 * np.pi * x * 16) * np.sin(
+            2 * np.pi * y * 16
+        )
+
+        params = estimate_adaptive_params(img)
+
+        assert params.mu1 < 0.33
+        assert params.mu2 > 0.007
 
     def test_estimator_is_deterministic(self) -> None:
         rng = np.random.default_rng(14)
@@ -453,6 +472,86 @@ class TestAdaptiveEstimator:
         assert np.all(smoothed[..., 0] <= 0.50)
         assert np.all(smoothed[..., 1] >= 0.0017)
         assert np.all(smoothed[..., 1] <= 0.017)
+
+
+class TestAdaptiveRefine:
+    def test_measure_shrinkage_uses_full_line_reliability(self) -> None:
+        from destripe.adaptive import stripe
+
+        tensor = torch.tensor(
+            [
+                [-1.0, 0.0, 1.0],
+                [-0.5, 0.0, 0.5],
+                [-1.0, 0.0, 1.0],
+                [-0.5, 0.0, 0.5],
+            ],
+            dtype=torch.float32,
+        )
+
+        assert stripe.measure_shrinkage(tensor, 0) == pytest.approx(8 / 9)
+
+    def test_measure_shrinkage_clamps_unreliable_profiles(self) -> None:
+        from destripe.adaptive import stripe
+
+        tensor = torch.tensor(
+            [
+                [-1.0, 0.0, 1.0],
+                [1.0, 0.0, -1.0],
+                [-1.0, 0.0, 1.0],
+                [1.0, 0.0, -1.0],
+            ],
+            dtype=torch.float32,
+        )
+
+        assert stripe.measure_shrinkage(tensor, 0) == 0.0
+
+    def test_refine_clean_moves_residual_stripe(self) -> None:
+        from destripe.adaptive.refine import refine_clean
+
+        h = w = 64
+        x = np.linspace(0.25, 0.75, w).reshape(1, -1)
+        gray = np.repeat(x, h, axis=0)
+        gray[:, 20] += 0.08
+        gray[:, 42] -= 0.06
+        gray = np.clip(gray, 0.0, 1.0)
+
+        refined = refine_clean(
+            gray=gray,
+            clean=gray,
+            directions=(0,),
+            proj=False,
+        )
+
+        before = _column_artifact(gray, columns=(20, 42))
+        after = _column_artifact(refined, columns=(20, 42))
+        assert after < before
+
+    def test_refine_clean_keeps_unhelpful_candidate(self) -> None:
+        from destripe.adaptive.refine import refine_clean
+
+        h = w = 64
+        x = np.linspace(0, 1, w).reshape(1, -1)
+        y = np.linspace(0, 1, h).reshape(-1, 1)
+        clean = 0.5 + 0.05 * np.sin(2 * np.pi * x * 12) * np.sin(
+            2 * np.pi * y * 12
+        )
+
+        refined = refine_clean(
+            gray=clean,
+            clean=clean,
+            directions=(0,),
+            proj=False,
+        )
+
+        assert np.allclose(refined, clean)
+
+
+def _column_artifact(image: np.ndarray, *, columns: tuple[int, ...]) -> float:
+    values = [
+        np.mean(np.abs(image[:, col] - 0.5 * (image[:, col - 1] + image[:, col + 1])))
+        for col in columns
+    ]
+    return float(np.mean(values))
 
 
 class TestDestripe:
@@ -870,7 +969,57 @@ class TestDestripe:
                 "directions": (0,),
             }
         ]
-        assert estimate_calls == [{"shape": img.shape, "fixed_directions": None}]
+
+    def test_adaptive_refines_clean_after_solver(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from destripe.adaptive import AdaptiveParams
+
+        seen: dict[str, object] = {}
+
+        def fake_estimate(
+            gray: np.ndarray, *, fixed_directions=None
+        ) -> AdaptiveParams:
+            return AdaptiveParams(
+                directions=(0,), mu1=0.10, mu2=0.0017, confidence=1.0
+            )
+
+        def fake_refine(
+            *,
+            gray: np.ndarray,
+            clean: np.ndarray,
+            directions: tuple[int, ...],
+            proj: bool,
+        ) -> np.ndarray:
+            seen["directions"] = directions
+            seen["proj"] = proj
+            return clean - 0.1
+
+        class FakeRemover:
+            def __init__(
+                self,
+                mu1: float,
+                mu2: float,
+                device: torch.device | str | None = None,
+                directions: object = None,
+            ) -> None:
+                pass
+
+            def process_tiled(self, image: np.ndarray, **_: object) -> torch.Tensor:
+                return torch.as_tensor(image)
+
+        monkeypatch.setattr(destripe_ops, "estimate_adaptive_params", fake_estimate)
+        monkeypatch.setattr(destripe_ops, "refine_clean", fake_refine)
+        monkeypatch.setattr(destripe_ops, "UniversalStripeRemover", FakeRemover)
+
+        img = np.random.default_rng(21).random((8, 8))
+        result = destripe(img, adaptive=True, iterations=1, proj=False)
+
+        assert seen == {
+            "directions": (0,),
+            "proj": False,
+        }
+        assert np.allclose(result, img - 0.1 * (img.max() - img.min()))
 
     def test_constant_returns_copy(self) -> None:
         img = np.full((32, 32), 128, dtype=np.uint8)

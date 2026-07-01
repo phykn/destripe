@@ -2,7 +2,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from . import constants
+from .constants import EPS
 
 
 def make_analysis_tensor(gray: np.ndarray) -> torch.Tensor:
@@ -44,6 +44,6 @@ def _normalize_gray(gray: np.ndarray) -> np.ndarray:
     low = float(np.min(arr))
     high = float(np.max(arr))
     scale = high - low
-    if scale <= constants.EPS:
+    if scale <= EPS:
         return np.zeros_like(arr, dtype=np.float64)
     return (arr - low) / scale

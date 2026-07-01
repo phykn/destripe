@@ -5,6 +5,7 @@ import numpy as np
 import torch
 
 from .adaptive import estimate_adaptive_params, estimate_tile_mus
+from .adaptive.refine import refine_clean
 from .core import UniversalStripeRemover
 from .preprocess import (
     prepare_solver_gray,
@@ -158,20 +159,28 @@ def _destripe_grayscale(
     process_size: int | None,
 ) -> np.ndarray:
     processed_gray = prepare_solver_gray(gray=gray, process_size=process_size)
-    remover = _make_remover(
-        gray=processed_gray,
-        adaptive=adaptive,
-        mu1=mu1,
-        mu2=mu2,
-        directions=directions,
+    if adaptive:
+        params = estimate_adaptive_params(processed_gray, fixed_directions=None)
+        resolved_mu1 = params.mu1
+        resolved_mu2 = params.mu2
+        resolved_directions = params.directions
+    else:
+        resolved_mu1 = mu1
+        resolved_mu2 = mu2
+        resolved_directions = directions
+
+    remover = UniversalStripeRemover(
+        mu1=resolved_mu1,
+        mu2=resolved_mu2,
         device=device,
+        directions=resolved_directions,
     )
     tile_mus = None
     if adaptive and tiles > 1:
         tile_mus = estimate_tile_mus(
             gray=processed_gray,
             tiles=tiles,
-            directions=remover.directions,
+            directions=resolved_directions,
         )
     solver_clean = remover.process_tiled(
         image=processed_gray,
@@ -183,6 +192,13 @@ def _destripe_grayscale(
         verbose=verbose,
         tile_mus=tile_mus,
     ).numpy()
+    if adaptive:
+        solver_clean = refine_clean(
+            gray=processed_gray,
+            clean=solver_clean,
+            directions=resolved_directions,
+            proj=proj,
+        )
 
     if processed_gray.shape == gray.shape:
         return solver_clean
@@ -193,28 +209,3 @@ def _destripe_grayscale(
     if proj:
         clean = np.clip(clean, 0.0, 1.0)
     return clean
-
-
-def _make_remover(
-    *,
-    gray: np.ndarray,
-    adaptive: bool,
-    mu1: float,
-    mu2: float,
-    directions: Sequence[int] | None,
-    device: torch.device | str | None,
-) -> UniversalStripeRemover:
-    if adaptive:
-        params = estimate_adaptive_params(gray, fixed_directions=None)
-        return UniversalStripeRemover(
-            mu1=params.mu1,
-            mu2=params.mu2,
-            device=device,
-            directions=params.directions,
-        )
-    return UniversalStripeRemover(
-        mu1=mu1,
-        mu2=mu2,
-        device=device,
-        directions=directions,
-    )

@@ -3,13 +3,13 @@ import math
 import numpy as np
 import torch
 
-from . import constants
+from .constants import ALL_DIRECTIONS, CROSS_OFFSETS, EPS, PARALLEL_OFFSETS
 
 
 def score_directions(high_pass: torch.Tensor) -> dict[int, float]:
     return {
         mode: _score_direction(high_pass, mode=mode)
-        for mode in constants.ALL_DIRECTIONS
+        for mode in ALL_DIRECTIONS
     }
 
 
@@ -19,7 +19,7 @@ def make_score_weights(scores: dict[int, float]) -> np.ndarray:
 
 def make_selection_weights(scores: dict[int, float]) -> np.ndarray:
     values = _make_score_array(scores)
-    if float(values.max() - values.min()) <= constants.EPS:
+    if float(values.max() - values.min()) <= EPS:
         weights = np.zeros_like(values)
         weights[int(np.argmax(values))] = 1.0
         return weights
@@ -29,8 +29,8 @@ def make_selection_weights(scores: dict[int, float]) -> np.ndarray:
 def select_directions(weights: np.ndarray) -> tuple[int, ...]:
     selected_modes = [
         mode
-        for mode, weight in zip(constants.ALL_DIRECTIONS, weights)
-        if weight > constants.EPS
+        for mode, weight in zip(ALL_DIRECTIONS, weights)
+        if weight > EPS
     ]
     if not selected_modes:
         return (int(np.argmax(weights)),)
@@ -39,7 +39,7 @@ def select_directions(weights: np.ndarray) -> tuple[int, ...]:
 
 def _make_score_array(scores: dict[int, float]) -> np.ndarray:
     return np.array(
-        [scores[mode] for mode in constants.ALL_DIRECTIONS], dtype=np.float64
+        [scores[mode] for mode in ALL_DIRECTIONS], dtype=np.float64
     )
 
 
@@ -58,18 +58,18 @@ def _offset_diff(t: torch.Tensor, row_step: int, col_step: int) -> torch.Tensor:
 
 
 def _score_direction(t: torch.Tensor, *, mode: int) -> float:
-    parallel = _offset_diff(t, *constants.PARALLEL_OFFSETS[mode]).abs().reshape(-1)
-    cross_offset = constants.CROSS_OFFSETS[mode]
+    parallel = _offset_diff(t, *PARALLEL_OFFSETS[mode]).abs().reshape(-1)
+    cross_offset = CROSS_OFFSETS[mode]
     cross = _offset_diff(t, *cross_offset).abs().reshape(-1)
-    parallel_q = float(torch.quantile(parallel, 0.75).item()) + constants.EPS
-    cross_q = float(torch.quantile(cross, 0.90).item()) + constants.EPS
+    parallel_q = float(torch.quantile(parallel, 0.75).item()) + EPS
+    cross_q = float(torch.quantile(cross, 0.90).item()) + EPS
     cross_length = math.hypot(*cross_offset)
     return (cross_q / cross_length) / parallel_q
 
 
 def _standardize_scores(values: np.ndarray) -> np.ndarray:
     scale = float(values.std())
-    if scale <= constants.EPS:
+    if scale <= EPS:
         return np.zeros_like(values)
     return (values - float(values.mean())) / scale
 

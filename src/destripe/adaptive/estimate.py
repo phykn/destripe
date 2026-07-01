@@ -2,7 +2,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from . import constants, directions, preprocess, strength
+from . import directions, preprocess, strength
+from .constants import ALL_DIRECTIONS
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,8 @@ def estimate_adaptive_params(
         else fixed
     )
     mu1, mu2, confidence = strength.estimate_strength(
+        high_pass=high_pass,
+        selected_directions=tuple(selected),
         score_weights=score_weights,
         selection_weights=selection_weights,
     )
@@ -55,7 +58,7 @@ def _validate_fixed_modes(requested: object) -> tuple[int, ...]:
     for mode in requested:
         if isinstance(mode, bool) or not isinstance(mode, int):
             raise ValueError(message)
-        if mode not in constants.ALL_DIRECTIONS or mode in seen:
+        if mode not in ALL_DIRECTIONS or mode in seen:
             raise ValueError(message)
         normalized.append(mode)
         seen.add(mode)
