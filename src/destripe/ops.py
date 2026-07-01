@@ -1,3 +1,6 @@
+from collections.abc import Sequence
+import warnings
+
 import numpy as np
 import torch
 
@@ -11,8 +14,8 @@ _LUMA_B = 0.1140
 
 def destripe(
     image: np.ndarray,
-    mu1: float = 0.33,
-    mu2: float = 0.003,
+    mu1: float | None = None,
+    mu2: float | None = None,
     iterations: int = 500,
     tol: float = 1e-5,
     tiles: int = 1,
@@ -20,6 +23,8 @@ def destripe(
     proj: bool = True,
     device: torch.device | str | None = None,
     verbose: bool = False,
+    adaptive: bool = False,
+    directions: Sequence[int] | None = None,
 ) -> np.ndarray:
     """Remove stripe noise from a NumPy image.
 
@@ -29,8 +34,10 @@ def destripe(
 
     Args:
         image: Input image array.
-        mu1: TV regularization weight.
-        mu2: L2 stripe penalty weight.
+        mu1: TV regularization weight. Uses the manual default when ``None``.
+            Ignored when ``adaptive`` is true.
+        mu2: L2 stripe penalty weight. Uses the manual default when ``None``.
+            Ignored when ``adaptive`` is true.
         iterations: Maximum PDHG iterations. Must be positive.
         tol: Relative convergence tolerance. Must be non-negative.
         tiles: Number of tiles per image side. Must be positive.
@@ -38,6 +45,11 @@ def destripe(
         proj: Whether to project the clean component onto ``[0, 1]``.
         device: Computation device for the underlying torch solver.
         verbose: Whether to print iteration progress.
+        adaptive: Whether to use adaptive parameter estimation. Until adaptive
+            estimation is implemented, this uses manual defaults and all
+            directions.
+        directions: Stripe direction modes to use. ``None`` uses all modes.
+            Ignored when ``adaptive`` is true.
 
     Returns:
         Destriped image with the same shape and dtype as
@@ -53,6 +65,21 @@ def destripe(
     if not np.isfinite(input_array).all():
         raise ValueError("image must not contain NaN or Inf values.")
 
+    manual_mu1 = mu1 is not None
+    manual_mu2 = mu2 is not None
+    manual_directions = directions is not None
+
+    if adaptive and (manual_mu1 or manual_mu2 or manual_directions):
+        warnings.warn(
+            "adaptive=True ignores manual directions, mu1, and mu2 values.",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    effective_mu1 = 0.33 if adaptive or mu1 is None else mu1
+    effective_mu2 = 0.003 if adaptive or mu2 is None else mu2
+    effective_directions = None if adaptive else directions
+
     orig_dtype = input_array.dtype
     normalized = input_array.astype(np.float64)
 
@@ -62,7 +89,12 @@ def destripe(
         return input_array.copy()
     normalized = (normalized - min_value) / scale
 
-    remover = UniversalStripeRemover(mu1=mu1, mu2=mu2, device=device)
+    remover = UniversalStripeRemover(
+        mu1=effective_mu1,
+        mu2=effective_mu2,
+        device=device,
+        directions=effective_directions,
+    )
 
     if normalized.ndim == 2:
         clean = _run_grayscale(

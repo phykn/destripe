@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 import torch
 
+import destripe.ops as destripe_ops
 from destripe import UniversalStripeRemover, destripe
 
 
@@ -200,6 +201,123 @@ class TestDestripe:
         result = destripe(img, iterations=20)
         assert result.shape == (32, 32, 1)
         assert result.dtype == np.float32
+
+    def test_manual_directions(self, gray_image: np.ndarray) -> None:
+        result = destripe(gray_image, directions=[0], iterations=10)
+        assert result.shape == gray_image.shape
+        assert result.dtype == gray_image.dtype
+
+    def test_invalid_manual_directions(self) -> None:
+        with pytest.raises(ValueError, match="directions"):
+            destripe(np.random.default_rng(12).random((16, 16)), directions=[5])
+
+    def test_adaptive_warns_when_manual_values_are_ignored(self) -> None:
+        img = np.random.default_rng(13).random((24, 24))
+        with pytest.warns(UserWarning, match="adaptive=True ignores"):
+            result = destripe(
+                img,
+                adaptive=True,
+                directions=[0],
+                mu1=0.5,
+                mu2=0.017,
+                iterations=5,
+            )
+        assert result.shape == img.shape
+
+    def test_manual_arguments_are_forwarded_to_remover(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[dict[str, object]] = []
+
+        class FakeRemover:
+            def __init__(
+                self,
+                mu1: float,
+                mu2: float,
+                device: torch.device | str | None = None,
+                directions: object = None,
+            ) -> None:
+                calls.append(
+                    {
+                        "mu1": mu1,
+                        "mu2": mu2,
+                        "device": device,
+                        "directions": directions,
+                    }
+                )
+
+            def process_tiled(self, image: np.ndarray, **_: object) -> torch.Tensor:
+                return torch.as_tensor(image)
+
+        monkeypatch.setattr(destripe_ops, "UniversalStripeRemover", FakeRemover)
+
+        img = np.random.default_rng(14).random((8, 8))
+        result = destripe(
+            img,
+            mu1=0.5,
+            mu2=0.017,
+            directions=[1, 4],
+            iterations=1,
+            device="cpu",
+        )
+
+        assert result.shape == img.shape
+        assert calls == [
+            {
+                "mu1": 0.5,
+                "mu2": 0.017,
+                "device": "cpu",
+                "directions": [1, 4],
+            }
+        ]
+
+    def test_adaptive_ignores_manual_arguments_for_remover(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[dict[str, object]] = []
+
+        class FakeRemover:
+            def __init__(
+                self,
+                mu1: float,
+                mu2: float,
+                device: torch.device | str | None = None,
+                directions: object = None,
+            ) -> None:
+                calls.append(
+                    {
+                        "mu1": mu1,
+                        "mu2": mu2,
+                        "device": device,
+                        "directions": directions,
+                    }
+                )
+
+            def process_tiled(self, image: np.ndarray, **_: object) -> torch.Tensor:
+                return torch.as_tensor(image)
+
+        monkeypatch.setattr(destripe_ops, "UniversalStripeRemover", FakeRemover)
+
+        img = np.random.default_rng(15).random((8, 8))
+        with pytest.warns(UserWarning, match="adaptive=True ignores"):
+            result = destripe(
+                img,
+                adaptive=True,
+                mu1=0.5,
+                mu2=0.017,
+                directions=[1, 4],
+                iterations=1,
+            )
+
+        assert result.shape == img.shape
+        assert calls == [
+            {
+                "mu1": 0.33,
+                "mu2": 0.003,
+                "device": None,
+                "directions": None,
+            }
+        ]
 
     def test_constant_returns_copy(self) -> None:
         img = np.full((32, 32), 128, dtype=np.uint8)
