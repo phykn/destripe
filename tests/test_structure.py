@@ -40,6 +40,17 @@ def test_adaptive_constants_live_in_constants_module() -> None:
     assert not hasattr(estimate, "_MU1_MIN")
 
 
+def test_adaptive_estimate_module_has_no_top_docstring_or_trivial_wrappers() -> None:
+    root = Path(__file__).resolve().parents[1] / "src" / "destripe" / "adaptive"
+    source = (root / "estimate.py").read_text(encoding="utf-8")
+
+    assert not source.lstrip().startswith('"""')
+    assert "def _score_values" not in source
+    assert "def _stripe_evidence_weights" not in source
+    assert "def _estimate_mu1" not in source
+    assert "def _estimate_mu2" not in source
+
+
 def test_image_ops_module_exposes_process_size_helpers() -> None:
     from destripe import image_ops
 

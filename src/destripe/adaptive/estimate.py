@@ -1,5 +1,3 @@
-"""Image-driven direction and parameter estimation."""
-
 from dataclasses import dataclass
 import math
 
@@ -36,8 +34,10 @@ def estimate_adaptive_params(
         mode: _direction_score(high_pass, mode=mode, contrast=contrast)
         for mode in constants.ALL_DIRECTIONS
     }
-    score_values = _score_values(scores)
-    evidence_weights = _stripe_evidence_weights(score_values)
+    score_values = np.array(
+        [scores[mode] for mode in constants.ALL_DIRECTIONS], dtype=np.float64
+    )
+    evidence_weights = _sparsemax(score_values)
     support_weights = _direction_support_weights(score_values)
     directions = _directions_from_weights(support_weights) if fixed is None else fixed
 
@@ -48,8 +48,8 @@ def estimate_adaptive_params(
         support_strength=support_strength,
     )
     ambiguity = _distribution_entropy(evidence_weights)
-    mu1 = _estimate_mu1(strength)
-    mu2 = _estimate_mu2(strength=strength, ambiguity=ambiguity)
+    mu1 = _linear_interp(constants.MU1_MIN, constants.MU1_MAX, strength)
+    mu2 = _log_interp(constants.MU2_MIN, constants.MU2_MAX, strength * ambiguity)
     confidence = strength * (1.0 - ambiguity)
     return AdaptiveParams(
         directions=tuple(directions),
@@ -154,14 +154,10 @@ def _direction_score(t: torch.Tensor, *, mode: int, contrast: float) -> float:
 
 
 def _select_directions(scores: dict[int, float]) -> tuple[int, ...]:
-    values = _score_values(scores)
-    return _directions_from_weights(_direction_support_weights(values))
-
-
-def _score_values(scores: dict[int, float]) -> np.ndarray:
-    return np.array(
+    values = np.array(
         [scores[mode] for mode in constants.ALL_DIRECTIONS], dtype=np.float64
     )
+    return _directions_from_weights(_direction_support_weights(values))
 
 
 def _standardized_scores(values: np.ndarray) -> np.ndarray:
@@ -169,10 +165,6 @@ def _standardized_scores(values: np.ndarray) -> np.ndarray:
     if scale <= constants.EPS:
         return np.zeros_like(values)
     return (values - float(values.mean())) / scale
-
-
-def _stripe_evidence_weights(values: np.ndarray) -> np.ndarray:
-    return _sparsemax(values)
 
 
 def _direction_support_weights(values: np.ndarray) -> np.ndarray:
@@ -229,14 +221,6 @@ def _adaptive_strength(*, evidence_strength: float, support_strength: float) -> 
     evidence = min(1.0, max(0.0, evidence_strength))
     support = min(1.0, max(0.0, support_strength))
     return math.sqrt(evidence * support)
-
-
-def _estimate_mu1(strength: float) -> float:
-    return _linear_interp(constants.MU1_MIN, constants.MU1_MAX, strength)
-
-
-def _estimate_mu2(*, strength: float, ambiguity: float) -> float:
-    return _log_interp(constants.MU2_MIN, constants.MU2_MAX, strength * ambiguity)
 
 
 def _linear_interp(lo: float, hi: float, t: float) -> float:
