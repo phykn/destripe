@@ -64,6 +64,38 @@ class TestAdjointConsistency:
         assert lhs == pytest.approx(-rhs, abs=1e-5)
 
 
+class TestDirections:
+    def test_default_directions_are_all_modes(self) -> None:
+        remover = UniversalStripeRemover(device="cpu")
+        assert remover.directions == (0, 1, 2, 3, 4)
+
+    def test_subset_directions_preserve_shape(self) -> None:
+        remover = UniversalStripeRemover(device="cpu", directions=[1, 4])
+        img = torch.rand(24, 24)
+        result = remover.process(image=img, iterations=5)
+        assert remover.directions == (1, 4)
+        assert result.shape == img.shape
+        assert torch.isfinite(result).all()
+
+    @pytest.mark.parametrize(
+        "directions",
+        [
+            [],
+            [0, 0],
+            [-1],
+            [5],
+            [1.5],
+            ["0"],
+            {0},
+            [[0]],
+            [True],
+        ],
+    )
+    def test_invalid_directions(self, directions: object) -> None:
+        with pytest.raises(ValueError, match="directions"):
+            UniversalStripeRemover(device="cpu", directions=directions)
+
+
 class TestProcess:
     def test_grayscale_2d(self, remover: UniversalStripeRemover) -> None:
         img = torch.rand(32, 32)

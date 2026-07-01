@@ -1,4 +1,5 @@
 import math
+from collections.abc import Sequence
 
 import numpy as np
 import torch
@@ -6,20 +7,23 @@ import torch.nn.functional as F
 
 
 _NUM_DIRS = 5  # Vertical + 4 diagonal directions
-_NUM_VARS = 1 + _NUM_DIRS  # Clean image u + stripe components s_i
+_ALL_DIRECTIONS = tuple(range(_NUM_DIRS))
 
 
 class UniversalStripeRemover:
     """Remove stripe noise from grayscale images with a PDHG solver.
 
     The model decomposes input data into a clean component ``u`` and directional
-    stripe components ``s_i`` such that ``u + sum(s_i) = data``.
+    stripe components ``s_i`` such that ``u + sum(s_i) = data``. By default all
+    five stripe directions are active; pass ``directions`` to use a subset.
 
     Args:
         mu1: TV regularization weight for the clean image.
         mu2: L2 penalty weight for stripe components.
         device: Computation device. If ``None``, CUDA is used when available,
             otherwise CPU.
+        directions: Optional sequence of active direction modes. Modes must be
+            unique integers in ``0..4``. If ``None``, all modes are used.
     """
 
     def __init__(
@@ -27,12 +31,14 @@ class UniversalStripeRemover:
         mu1: float = 0.33,
         mu2: float = 0.003,
         device: torch.device | str | None = None,
+        directions: Sequence[int] | None = None,
     ) -> None:
         self.device = device or torch.device(
             "cuda" if torch.cuda.is_available() else "cpu"
         )
         self.mu1 = mu1
         self.mu2 = mu2
+        self.directions = self._validate_directions(directions)
         self.tau = 0.35
         self.sigma = 0.35
 
@@ -47,6 +53,8 @@ class UniversalStripeRemover:
         verbose: bool = False,
     ) -> torch.Tensor:
         """Destripe a grayscale image or a batch of grayscale images.
+
+        Uses the active stripe ``directions`` configured on this remover.
 
         Args:
             image: Input tensor/array with shape ``(H, W)`` or ``(N, H, W)``.
@@ -239,16 +247,19 @@ class UniversalStripeRemover:
         l2_dual_clip = self.mu2 / self.sigma
         eps = 1e-9
 
+        num_stripes = len(self.directions)
+        num_vars = 1 + num_stripes
+
         clean = data.clone()
-        stripe_components = [torch.zeros_like(input=data) for _ in range(_NUM_DIRS)]
+        stripe_components = [torch.zeros_like(input=data) for _ in self.directions]
 
         grad_row, grad_row_bar = self._zero_pair(ref=data)
         grad_col, grad_col_bar = self._zero_pair(ref=data)
 
-        dir_dual = [torch.zeros_like(input=data) for _ in range(_NUM_DIRS)]
-        dir_dual_bar = [torch.zeros_like(input=data) for _ in range(_NUM_DIRS)]
-        l2_dual = [torch.zeros_like(input=data) for _ in range(_NUM_DIRS)]
-        l2_dual_bar = [torch.zeros_like(input=data) for _ in range(_NUM_DIRS)]
+        dir_dual = [torch.zeros_like(input=data) for _ in self.directions]
+        dir_dual_bar = [torch.zeros_like(input=data) for _ in self.directions]
+        l2_dual = [torch.zeros_like(input=data) for _ in self.directions]
+        l2_dual_bar = [torch.zeros_like(input=data) for _ in self.directions]
 
         prev_clean = clean.clone()
         scratch = torch.empty_like(input=data)
@@ -267,20 +278,22 @@ class UniversalStripeRemover:
                     a=step_size,
                 )
 
-                for mode in range(_NUM_DIRS):
+                for component_idx, mode in enumerate(self.directions):
                     self._adjoint_dir(
-                        target=stripe_components[mode],
-                        q=dir_dual_bar[mode],
+                        target=stripe_components[component_idx],
+                        q=dir_dual_bar[component_idx],
                         mode=mode,
                         a=step_size,
                     )
-                    stripe_components[mode].sub_(l2_dual_bar[mode], alpha=step_size)
+                    stripe_components[component_idx].sub_(
+                        l2_dual_bar[component_idx], alpha=step_size
+                    )
 
                 # Enforce u + sum(s_i) = data via shared scratch.
                 scratch.copy_(data)
                 for stripe_component in stripe_components:
                     scratch.sub_(stripe_component)
-                scratch.sub_(clean).div_(_NUM_VARS)
+                scratch.sub_(clean).div_(num_vars)
                 clean.add_(scratch)
                 for stripe_component in stripe_components:
                     stripe_component.add_(scratch)
@@ -290,7 +303,7 @@ class UniversalStripeRemover:
                     # the constraint u + sum(s_i) = data.
                     torch.clamp(input=clean, max=0, out=scratch)
                     scratch.add_((clean - 1).clamp_(min=0))
-                    scratch.div_(_NUM_DIRS)
+                    scratch.div_(num_stripes)
                     for stripe_component in stripe_components:
                         stripe_component.add_(scratch)
                     clean.clamp_(min=0, max=1)
@@ -314,25 +327,31 @@ class UniversalStripeRemover:
                 grad_row_bar.mul_(-1).add_(grad_row, alpha=2)
                 grad_col_bar.mul_(-1).add_(grad_col, alpha=2)
 
-                for mode in range(_NUM_DIRS):
-                    dir_dual_bar[mode].copy_(dir_dual[mode])
+                for component_idx, mode in enumerate(self.directions):
+                    dir_dual_bar[component_idx].copy_(dir_dual[component_idx])
                     self._dir_diff(
-                        x=stripe_components[mode],
+                        x=stripe_components[component_idx],
                         mode=mode,
                         out=directional_diff,
                     )
-                    dir_dual[mode].add_(directional_diff).clamp_(
+                    dir_dual[component_idx].add_(directional_diff).clamp_(
                         min=-dir_dual_clip,
                         max=dir_dual_clip,
                     )
-                    dir_dual_bar[mode].mul_(-1).add_(dir_dual[mode], alpha=2)
+                    dir_dual_bar[component_idx].mul_(-1).add_(
+                        dir_dual[component_idx], alpha=2
+                    )
 
-                    l2_dual_bar[mode].copy_(l2_dual[mode])
-                    l2_dual[mode].add_(stripe_components[mode]).clamp_(
+                    l2_dual_bar[component_idx].copy_(l2_dual[component_idx])
+                    l2_dual[component_idx].add_(
+                        stripe_components[component_idx]
+                    ).clamp_(
                         min=-l2_dual_clip,
                         max=l2_dual_clip,
                     )
-                    l2_dual_bar[mode].mul_(-1).add_(l2_dual[mode], alpha=2)
+                    l2_dual_bar[component_idx].mul_(-1).add_(
+                        l2_dual[component_idx], alpha=2
+                    )
 
                 if iteration_idx % 20 == 0:
                     if iteration_idx > 0:
@@ -364,6 +383,31 @@ class UniversalStripeRemover:
             raise ValueError(f"tiles must be a positive integer, got {tiles}.")
         if overlap < 0:
             raise ValueError(f"overlap must be non-negative, got {overlap}.")
+
+    @staticmethod
+    def _validate_directions(directions: Sequence[int] | None) -> tuple[int, ...]:
+        if directions is None:
+            return _ALL_DIRECTIONS
+        if not isinstance(directions, Sequence):
+            raise ValueError("directions must be None or a sequence of integers.")
+
+        try:
+            values = tuple(directions)
+        except TypeError as exc:
+            raise ValueError(
+                "directions must be None or a sequence of integers."
+            ) from exc
+
+        if not values:
+            raise ValueError("directions must not be empty.")
+        for mode in values:
+            if not isinstance(mode, int) or isinstance(mode, bool):
+                raise ValueError("directions must contain integers in the range 0..4.")
+            if mode < 0 or mode >= _NUM_DIRS:
+                raise ValueError("directions must contain integers in the range 0..4.")
+        if len(set(values)) != len(values):
+            raise ValueError("directions must not contain duplicates.")
+        return values
 
     @staticmethod
     def _validate_finite_tensor(name: str, x: torch.Tensor) -> None:
