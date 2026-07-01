@@ -1,10 +1,10 @@
 import numpy as np
 
 from .estimate import (
-    _MU1_MAX,
-    _MU1_MIN,
-    _MU2_MAX,
-    _MU2_MIN,
+    MU1_MAX,
+    MU1_MIN,
+    MU2_MAX,
+    MU2_MIN,
     estimate_adaptive_params,
 )
 
@@ -51,8 +51,8 @@ def smooth_tile_mus(mus: np.ndarray) -> np.ndarray:
         raise ValueError("mus must have shape (rows, cols, 2).")
 
     clipped = np.empty_like(mus, dtype=np.float64)
-    clipped[..., 0] = np.clip(mus[..., 0], _MU1_MIN, _MU1_MAX)
-    clipped[..., 1] = np.clip(mus[..., 1], _MU2_MIN, _MU2_MAX)
+    clipped[..., 0] = np.clip(mus[..., 0], MU1_MIN, MU1_MAX)
+    clipped[..., 1] = np.clip(mus[..., 1], MU2_MIN, MU2_MAX)
 
     log_mus = np.log(clipped)
     padded = np.pad(log_mus, ((1, 1), (1, 1), (0, 0)), mode="edge")
@@ -66,6 +66,6 @@ def smooth_tile_mus(mus: np.ndarray) -> np.ndarray:
             ]
     out /= 9.0
     smoothed = np.exp(out)
-    smoothed[..., 0] = np.clip(smoothed[..., 0], _MU1_MIN, _MU1_MAX)
-    smoothed[..., 1] = np.clip(smoothed[..., 1], _MU2_MIN, _MU2_MAX)
+    smoothed[..., 0] = np.clip(smoothed[..., 0], MU1_MIN, MU1_MAX)
+    smoothed[..., 1] = np.clip(smoothed[..., 1], MU2_MIN, MU2_MAX)
     return smoothed

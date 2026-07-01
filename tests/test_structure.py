@@ -17,6 +17,19 @@ def test_adaptive_local_module_owns_tile_local_estimation() -> None:
     assert not (root / "tiles.py").exists()
 
 
+def test_shared_adaptive_mu_bounds_are_not_private_names() -> None:
+    from destripe.adaptive import estimate
+
+    assert estimate.MU1_MIN == 0.10
+    assert estimate.MU1_MAX == 0.50
+    assert estimate.MU2_MIN == 0.0017
+    assert estimate.MU2_MAX == 0.017
+    assert not hasattr(estimate, "_MU1_MIN")
+    assert not hasattr(estimate, "_MU1_MAX")
+    assert not hasattr(estimate, "_MU2_MIN")
+    assert not hasattr(estimate, "_MU2_MAX")
+
+
 def test_image_ops_module_exposes_process_size_helpers() -> None:
     from destripe import image_ops
 

@@ -23,10 +23,10 @@ _CROSS_OFFSETS = {
     4: (1, 1),
 }
 
-_MU1_MIN = 0.10
-_MU1_MAX = 0.50
-_MU2_MIN = 0.0017
-_MU2_MAX = 0.017
+MU1_MIN = 0.10
+MU1_MAX = 0.50
+MU2_MIN = 0.0017
+MU2_MAX = 0.017
 _EPS = 1e-9
 
 
@@ -250,11 +250,11 @@ def _adaptive_strength(*, evidence_strength: float, support_strength: float) -> 
 
 
 def _estimate_mu1(strength: float) -> float:
-    return _linear_interp(_MU1_MIN, _MU1_MAX, strength)
+    return _linear_interp(MU1_MIN, MU1_MAX, strength)
 
 
 def _estimate_mu2(*, strength: float, ambiguity: float) -> float:
-    return _log_interp(_MU2_MIN, _MU2_MAX, strength * ambiguity)
+    return _log_interp(MU2_MIN, MU2_MAX, strength * ambiguity)
 
 
 def _linear_interp(lo: float, hi: float, t: float) -> float:
