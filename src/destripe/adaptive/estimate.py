@@ -26,16 +26,16 @@ def estimate_adaptive_params(
     analysis = preprocess.analysis_tensor(gray)
     high_pass = preprocess.high_pass(analysis)
     scores = directions.score_directions(high_pass)
-    evidence_weights = directions.evidence_weights(scores)
-    support_weights = directions.support_weights(scores)
+    score_weights = directions.score_weights(scores)
+    selection_weights = directions.selection_weights(scores)
     selected = (
-        directions.select_from_weights(support_weights)
+        directions.select_directions_from_weights(selection_weights)
         if fixed is None
         else fixed
     )
     mu1, mu2, confidence = strength.estimate_mu_and_confidence(
-        evidence_weights=evidence_weights,
-        support_weights=support_weights,
+        score_weights=score_weights,
+        selection_weights=selection_weights,
     )
     return AdaptiveParams(
         directions=tuple(selected),

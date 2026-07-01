@@ -6,22 +6,21 @@ import torch
 from . import constants
 
 
-def score_directions(t: torch.Tensor) -> dict[int, float]:
-    contrast = _robust_contrast(t)
+def score_directions(high_pass: torch.Tensor) -> dict[int, float]:
     return {
-        mode: _direction_score(t, mode=mode, contrast=contrast)
+        mode: _direction_score(high_pass, mode=mode)
         for mode in constants.ALL_DIRECTIONS
     }
 
 
-def evidence_weights(scores: dict[int, float]) -> np.ndarray:
+def score_weights(scores: dict[int, float]) -> np.ndarray:
     values = np.array(
         [scores[mode] for mode in constants.ALL_DIRECTIONS], dtype=np.float64
     )
     return _sparsemax(values)
 
 
-def support_weights(scores: dict[int, float]) -> np.ndarray:
+def selection_weights(scores: dict[int, float]) -> np.ndarray:
     values = np.array(
         [scores[mode] for mode in constants.ALL_DIRECTIONS], dtype=np.float64
     )
@@ -32,19 +31,15 @@ def support_weights(scores: dict[int, float]) -> np.ndarray:
     return _sparsemax(_standardized_scores(values))
 
 
-def select_directions(scores: dict[int, float]) -> tuple[int, ...]:
-    return select_from_weights(support_weights(scores))
-
-
-def select_from_weights(weights: np.ndarray) -> tuple[int, ...]:
-    support = [
+def select_directions_from_weights(weights: np.ndarray) -> tuple[int, ...]:
+    selected_modes = [
         mode
         for mode, weight in zip(constants.ALL_DIRECTIONS, weights)
         if weight > constants.EPS
     ]
-    if not support:
+    if not selected_modes:
         return (int(np.argmax(weights)),)
-    return tuple(sorted(support, key=lambda mode: (-weights[mode], mode)))
+    return tuple(sorted(selected_modes, key=lambda mode: (-weights[mode], mode)))
 
 
 def _offset_diff(t: torch.Tensor, row_step: int, col_step: int) -> torch.Tensor:
@@ -61,19 +56,14 @@ def _offset_diff(t: torch.Tensor, row_step: int, col_step: int) -> torch.Tensor:
     return b - a
 
 
-def _robust_contrast(t: torch.Tensor) -> float:
-    return float(torch.quantile(t.abs().reshape(-1), 0.90).item()) + constants.EPS
-
-
-def _direction_score(t: torch.Tensor, *, mode: int, contrast: float) -> float:
+def _direction_score(t: torch.Tensor, *, mode: int) -> float:
     parallel = _offset_diff(t, *constants.PARALLEL_OFFSETS[mode]).abs().reshape(-1)
     cross_offset = constants.CROSS_OFFSETS[mode]
     cross = _offset_diff(t, *cross_offset).abs().reshape(-1)
     parallel_q = float(torch.quantile(parallel, 0.75).item()) + constants.EPS
     cross_q = float(torch.quantile(cross, 0.90).item()) + constants.EPS
-    power_q = float(torch.quantile(t.abs().reshape(-1), 0.90).item()) + constants.EPS
     cross_length = math.hypot(*cross_offset)
-    return ((cross_q / cross_length) / parallel_q) * (power_q / contrast)
+    return (cross_q / cross_length) / parallel_q
 
 
 def _standardized_scores(values: np.ndarray) -> np.ndarray:

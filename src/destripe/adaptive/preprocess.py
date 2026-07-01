@@ -6,10 +6,8 @@ from . import constants
 
 
 def analysis_tensor(gray: np.ndarray) -> torch.Tensor:
-    evidence = _normalized_gray(gray)
-    t = torch.as_tensor(evidence, dtype=torch.float32)
-    if t.dim() != 2:
-        raise ValueError("gray must have shape (H, W).")
+    normalized = _normalized_gray(gray)
+    t = torch.as_tensor(normalized, dtype=torch.float32)
     h, w = t.shape
     max_side = max(h, w)
     if max_side <= 512:
@@ -42,7 +40,7 @@ def high_pass(t: torch.Tensor) -> torch.Tensor:
 def _normalized_gray(gray: np.ndarray) -> np.ndarray:
     arr = np.asarray(gray, dtype=np.float64)
     if arr.ndim != 2:
-        return arr
+        raise ValueError("gray must have shape (H, W).")
     lo = float(np.min(arr))
     hi = float(np.max(arr))
     scale = hi - lo

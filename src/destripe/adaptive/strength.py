@@ -7,13 +7,13 @@ from . import constants
 
 def estimate_mu_and_confidence(
     *,
-    evidence_weights: np.ndarray,
-    support_weights: np.ndarray,
+    score_weights: np.ndarray,
+    selection_weights: np.ndarray,
 ) -> tuple[float, float, float]:
-    evidence_strength = _distribution_concentration(evidence_weights)
-    support_strength = _distribution_concentration(support_weights)
-    strength = math.sqrt(evidence_strength * support_strength)
-    ambiguity = _distribution_entropy(evidence_weights)
+    score_strength = _distribution_concentration(score_weights)
+    selection_strength = _distribution_concentration(selection_weights)
+    strength = math.sqrt(score_strength * selection_strength)
+    ambiguity = _distribution_entropy(score_weights)
 
     mu1 = float(
         constants.MU1_MIN * (1.0 - strength) + constants.MU1_MAX * strength

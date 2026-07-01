@@ -73,6 +73,43 @@ def test_adaptive_estimate_does_not_shadow_imported_modules() -> None:
     assert "def _validate_fixed_directions(directions:" not in estimate_source
 
 
+def test_adaptive_direction_names_describe_their_inputs_and_roles() -> None:
+    root = Path(__file__).resolve().parents[1] / "src" / "destripe" / "adaptive"
+    directions_source = (root / "directions.py").read_text(encoding="utf-8")
+    estimate_source = (root / "estimate.py").read_text(encoding="utf-8")
+    strength_source = (root / "strength.py").read_text(encoding="utf-8")
+
+    assert "def score_directions(high_pass:" in directions_source
+    assert "def score_weights(" in directions_source
+    assert "def selection_weights(" in directions_source
+    assert "def select_directions_from_weights(" in directions_source
+    assert "def evidence_weights(" not in directions_source
+    assert "def support_weights(" not in directions_source
+    assert "def select_from_weights(" not in directions_source
+    assert "def select_directions(" not in directions_source
+    assert "evidence_weights" not in estimate_source
+    assert "support_weights" not in estimate_source
+    assert "evidence_weights" not in strength_source
+    assert "support_weights" not in strength_source
+
+
+def test_adaptive_direction_score_has_no_self_normalizing_factor() -> None:
+    root = Path(__file__).resolve().parents[1] / "src" / "destripe" / "adaptive"
+    directions_source = (root / "directions.py").read_text(encoding="utf-8")
+
+    assert "_robust_contrast" not in directions_source
+    assert "power_q" not in directions_source
+    assert "contrast" not in directions_source
+
+
+def test_adaptive_preprocess_validates_shape_before_tensor_conversion() -> None:
+    root = Path(__file__).resolve().parents[1] / "src" / "destripe" / "adaptive"
+    preprocess_source = (root / "preprocess.py").read_text(encoding="utf-8")
+
+    assert "if t.dim() != 2:" not in preprocess_source
+    assert 'raise ValueError("gray must have shape (H, W).")' in preprocess_source
+
+
 def test_image_ops_module_exposes_process_size_helpers() -> None:
     from destripe import image_ops
 
