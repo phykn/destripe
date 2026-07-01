@@ -336,6 +336,27 @@ class TestAdaptiveEstimator:
         assert 0.10 <= params.mu1 <= 0.50
         assert 0.0017 <= params.mu2 <= 0.017
 
+    def test_faint_coherent_stripes_get_default_strength(self) -> None:
+        rng = np.random.default_rng(1234)
+        h = w = 128
+        x = np.linspace(0, 1, w).reshape(1, -1)
+        y = np.linspace(0, 1, h).reshape(-1, 1)
+        img = (
+            0.25
+            + 0.35 * x
+            + 0.12 * y
+            + 0.04 * np.sin(2 * np.pi * x * 3) * np.sin(2 * np.pi * y * 2)
+        )
+        img += rng.normal(0, 0.003, img.shape)
+        img = (img - img.min()) / (img.max() - img.min())
+        for col, amp in [(24, 0.015), (57, -0.012), (90, 0.0105), (112, -0.009)]:
+            img[:, col] = np.clip(img[:, col] + amp, 0.0, 1.0)
+
+        params = estimate_adaptive_params(img)
+
+        assert params.directions[0] == 0
+        assert params.mu1 >= 0.33
+
     def test_estimator_is_deterministic(self) -> None:
         rng = np.random.default_rng(14)
         img = rng.random((48, 48))

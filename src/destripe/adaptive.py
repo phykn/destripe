@@ -63,7 +63,12 @@ def estimate_adaptive_params(
     support_weights = _direction_support_weights(score_values)
     directions = _directions_from_weights(support_weights) if fixed is None else fixed
 
-    strength = _distribution_concentration(evidence_weights)
+    evidence_strength = _distribution_concentration(evidence_weights)
+    support_strength = _distribution_concentration(support_weights)
+    strength = _adaptive_strength(
+        evidence_strength=evidence_strength,
+        support_strength=support_strength,
+    )
     ambiguity = _distribution_entropy(evidence_weights)
     mu1 = _estimate_mu1(strength)
     mu2 = _estimate_mu2(strength=strength, ambiguity=ambiguity)
@@ -263,6 +268,12 @@ def _distribution_entropy(weights: np.ndarray) -> float:
         return 0.0
     entropy = -float(np.sum(positive * np.log(positive)))
     return min(1.0, max(0.0, entropy / math.log(len(weights))))
+
+
+def _adaptive_strength(*, evidence_strength: float, support_strength: float) -> float:
+    evidence = min(1.0, max(0.0, evidence_strength))
+    support = min(1.0, max(0.0, support_strength))
+    return math.sqrt(evidence * support)
 
 
 def _estimate_mu1(strength: float) -> float:
