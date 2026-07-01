@@ -17,14 +17,14 @@ PDHG-based stripe-noise removal for NumPy images, backed by PyTorch. The solver 
 ```python
 from destripe import destripe
 
-image = ...  # numpy.ndarray, shape [H, W] or [H, W, 3]
+image = ...
 
 clean = destripe(
     image,
-    adaptive=True,  # automatically chooses directions and mu strengths
+    adaptive=True,
     iterations=500,
-    tiles=1,       # >1 for n x n tiled processing
-    device="cpu",  # "cpu", "cuda", or None to auto-select
+    tiles=1,
+    device="cpu",
 )
 ```
 
@@ -72,7 +72,7 @@ estimated stripe component and subtracts it from the original-resolution input.
 clean = destripe(
     image,
     adaptive=True,
-    process_size=512,  # None keeps the original resolution
+    process_size=512,
     iterations=500,
 )
 ```
@@ -83,12 +83,12 @@ thin one-pixel stripes can be weakened by downsampling; keep
 
 ## Manual Mode
 Manual mode is useful when the stripe direction and regularization strength are
-known.
+known. Mode `0` targets vertical stripes; modes `1..4` target diagonal stripes.
 
 ```python
 clean = destripe(
     image,
-    directions=[0],  # 0=vertical, 1..4=diagonal modes
+    directions=[0],
     mu1=0.33,
     mu2=0.003,
     iterations=500,

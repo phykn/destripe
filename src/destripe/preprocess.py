@@ -3,7 +3,7 @@ import numbers
 import cv2
 import numpy as np
 
-# Rec. 601 luma coefficients (standard for NTSC/JPEG grayscale conversion)
+# Rec. 601 keeps RGB stripe estimation aligned with conventional luma.
 _LUMA_R = 0.2989
 _LUMA_G = 0.5870
 _LUMA_B = 0.1140

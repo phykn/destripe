@@ -296,9 +296,7 @@ class UniversalStripeRemover:
         else:
             data = data.to(device=self.device, dtype=torch.float32)
 
-        # PDHG constants (pre-scaled by sigma)
-        #   standard form: u -= tau * K^T p_bar
-        #   here: step = tau * sigma is used with sigma-scaled duals
+        # Dual variables are sigma-scaled, so primal updates fold in tau*sigma.
         step_size = self.tau * self.sigma
         mu1_tensor = self._solver_mu_tensor(value=mu1, fallback=self.mu1, ref=data)
         mu2_tensor = self._solver_mu_tensor(value=mu2, fallback=self.mu2, ref=data)
@@ -349,7 +347,7 @@ class UniversalStripeRemover:
                         l2_dual_bar[component_idx], alpha=step_size
                     )
 
-                # Enforce u + sum(s_i) = data via shared scratch.
+                # Independent primal updates would drift off u + sum(s_i) = data.
                 scratch.copy_(data)
                 for stripe_component in stripe_components:
                     scratch.sub_(stripe_component)
@@ -359,8 +357,7 @@ class UniversalStripeRemover:
                     stripe_component.add_(scratch)
 
                 if proj:
-                    # Distribute clamp residual to stripes to maintain
-                    # the constraint u + sum(s_i) = data.
+                    # Clamping clean would break equality unless stripes absorb the residual.
                     torch.clamp(input=clean, max=0, out=scratch)
                     scratch.add_((clean - 1).clamp_(min=0))
                     scratch.div_(num_stripes)
