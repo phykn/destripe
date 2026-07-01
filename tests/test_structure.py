@@ -66,6 +66,13 @@ def test_adaptive_estimate_delegates_preprocess_directions_and_strength() -> Non
     assert "def _adaptive_strength" not in estimate_source
 
 
+def test_adaptive_estimate_does_not_shadow_imported_modules() -> None:
+    root = Path(__file__).resolve().parents[1] / "src" / "destripe" / "adaptive"
+    estimate_source = (root / "estimate.py").read_text(encoding="utf-8")
+
+    assert "def _validate_fixed_directions(directions:" not in estimate_source
+
+
 def test_image_ops_module_exposes_process_size_helpers() -> None:
     from destripe import image_ops
 
