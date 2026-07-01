@@ -33,7 +33,7 @@ def estimate_strength(
         high=MU2_MAX,
         position=1.0 - stripe_permission,
     )
-    mu1, mu2 = _fit_boundary(
+    mu1, mu2 = _fit_cost_boundary(
         target_mu2=target_mu2,
         stripe_amp=stripe_amp,
         parallel_cost=parallel_cost,
@@ -97,7 +97,7 @@ def _measure_stripe(
     )
 
 
-def _fit_boundary(
+def _fit_cost_boundary(
     *,
     target_mu2: float,
     stripe_amp: float,
@@ -107,6 +107,7 @@ def _fit_boundary(
     if stripe_amp <= EPS or tv_cost <= EPS:
         return MU1_MIN, MU2_MAX
 
+    # Keep a coherent stripe candidate preferable under the solver cost.
     mu2_limit = (
         MU1_MIN * tv_cost - parallel_cost
     ) / (stripe_amp + EPS)

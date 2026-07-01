@@ -312,7 +312,7 @@ class UniversalStripeRemover:
         )
         tv_dual_radius = mu1_tensor / self.sigma
         dir_dual_clip = 1.0 / self.sigma
-        l2_dual_clip = mu2_tensor / self.sigma
+        sparse_dual_clip = mu2_tensor / self.sigma
         eps = 1e-9
 
         num_stripes = len(self.directions)
@@ -326,8 +326,8 @@ class UniversalStripeRemover:
 
         dir_dual = [torch.zeros_like(input=data) for _ in self.directions]
         dir_dual_bar = [torch.zeros_like(input=data) for _ in self.directions]
-        l2_dual = [torch.zeros_like(input=data) for _ in self.directions]
-        l2_dual_bar = [torch.zeros_like(input=data) for _ in self.directions]
+        sparse_dual = [torch.zeros_like(input=data) for _ in self.directions]
+        sparse_dual_bar = [torch.zeros_like(input=data) for _ in self.directions]
 
         prev_clean = clean.clone()
         scratch = torch.empty_like(input=data)
@@ -354,7 +354,7 @@ class UniversalStripeRemover:
                         scale=step_size,
                     )
                     stripe_components[component_idx].sub_(
-                        l2_dual_bar[component_idx], alpha=step_size
+                        sparse_dual_bar[component_idx], alpha=step_size
                     )
 
                 # Independent primal updates would drift off u + sum(s_i) = data.
@@ -409,20 +409,20 @@ class UniversalStripeRemover:
                         dir_dual[component_idx], alpha=2
                     )
 
-                    l2_dual_bar[component_idx].copy_(l2_dual[component_idx])
-                    l2_dual[component_idx].add_(stripe_components[component_idx])
+                    sparse_dual_bar[component_idx].copy_(sparse_dual[component_idx])
+                    sparse_dual[component_idx].add_(stripe_components[component_idx])
                     torch.maximum(
-                        l2_dual[component_idx],
-                        -l2_dual_clip,
-                        out=l2_dual[component_idx],
+                        sparse_dual[component_idx],
+                        -sparse_dual_clip,
+                        out=sparse_dual[component_idx],
                     )
                     torch.minimum(
-                        l2_dual[component_idx],
-                        l2_dual_clip,
-                        out=l2_dual[component_idx],
+                        sparse_dual[component_idx],
+                        sparse_dual_clip,
+                        out=sparse_dual[component_idx],
                     )
-                    l2_dual_bar[component_idx].mul_(-1).add_(
-                        l2_dual[component_idx], alpha=2
+                    sparse_dual_bar[component_idx].mul_(-1).add_(
+                        sparse_dual[component_idx], alpha=2
                     )
 
                 if iteration_idx % 20 == 0:

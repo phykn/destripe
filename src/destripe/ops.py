@@ -38,7 +38,7 @@ def destripe(
     Args:
         image: Input image.
         mu1: Manual TV weight; ignored when adaptive=True.
-        mu2: Manual L2 stripe penalty; ignored when adaptive=True.
+        mu2: Manual stripe sparsity weight; ignored when adaptive=True.
         iterations: Maximum PDHG iterations.
         tol: Relative convergence tolerance.
         tiles: Tiles per image side.

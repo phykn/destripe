@@ -128,6 +128,8 @@ def test_adaptive_direction_names_describe_their_inputs_and_roles() -> None:
     assert "def _measure_entropy(" in strength_source
     assert "def _distribution_concentration(" not in strength_source
     assert "def _distribution_entropy(" not in strength_source
+    assert "def _fit_cost_boundary(" in strength_source
+    assert "def _fit_boundary(" not in strength_source
     assert "def _average_weighted(" in strength_source
     assert "def _weighted_mean(" not in strength_source
 
@@ -206,6 +208,8 @@ def test_ops_module_keeps_flow_direct_and_docstring_concise() -> None:
     assert "manual_mu1" not in source
     assert "manual_mu2" not in source
     assert "manual_directions" not in source
+    assert "Manual stripe sparsity weight" in source
+    assert "L2 stripe penalty" not in source
     assert "process_size: Long-edge solver size; None keeps original resolution." in source
     assert "preserving aspect ratio, then upsample" not in source
     assert "Returns:\n        Destriped image with the same shape and dtype." in source
@@ -239,6 +243,8 @@ def test_core_is_package_with_remover_and_operators() -> None:
     assert "original_mu1" not in remover_source
     assert "original_mu2" not in remover_source
     assert "validated_tile_mus" not in remover_source
+    assert "l2_dual" not in remover_source
+    assert "sparse_dual" in remover_source
     assert "On CUDA" not in remover_source
     assert "def _make_tile_mu_tensors(" in remover_source
     assert "def _make_solver_mu_tensor(" in remover_source
