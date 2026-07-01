@@ -27,17 +27,17 @@ def test_adaptive_local_module_avoids_manual_nested_window_loops() -> None:
     assert "for col in range(tiles)" not in source
 
 
-def test_shared_adaptive_mu_bounds_are_not_private_names() -> None:
-    from destripe.adaptive import estimate
+def test_adaptive_constants_live_in_constants_module() -> None:
+    from destripe.adaptive import constants, estimate
 
-    assert estimate.MU1_MIN == 0.10
-    assert estimate.MU1_MAX == 0.50
-    assert estimate.MU2_MIN == 0.0017
-    assert estimate.MU2_MAX == 0.017
+    assert constants.ALL_DIRECTIONS == (0, 1, 2, 3, 4)
+    assert constants.MU1_MIN == 0.10
+    assert constants.MU1_MAX == 0.50
+    assert constants.MU2_MIN == 0.0017
+    assert constants.MU2_MAX == 0.017
+    assert constants.EPS == 1e-9
+    assert not hasattr(estimate, "MU1_MIN")
     assert not hasattr(estimate, "_MU1_MIN")
-    assert not hasattr(estimate, "_MU1_MAX")
-    assert not hasattr(estimate, "_MU2_MIN")
-    assert not hasattr(estimate, "_MU2_MAX")
 
 
 def test_image_ops_module_exposes_process_size_helpers() -> None:

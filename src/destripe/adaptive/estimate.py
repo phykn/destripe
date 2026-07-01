@@ -7,27 +7,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-_ALL_DIRECTIONS = (0, 1, 2, 3, 4)
-_PARALLEL_OFFSETS = {
-    0: (1, 0),
-    1: (2, 1),
-    2: (1, 1),
-    3: (2, -1),
-    4: (1, -1),
-}
-_CROSS_OFFSETS = {
-    0: (0, 1),
-    1: (1, -2),
-    2: (1, -1),
-    3: (1, 2),
-    4: (1, 1),
-}
-
-MU1_MIN = 0.10
-MU1_MAX = 0.50
-MU2_MIN = 0.0017
-MU2_MAX = 0.017
-_EPS = 1e-9
+from . import constants
 
 
 @dataclass(frozen=True)
@@ -54,7 +34,7 @@ def estimate_adaptive_params(
 
     scores = {
         mode: _direction_score(high_pass, mode=mode, contrast=contrast)
-        for mode in _ALL_DIRECTIONS
+        for mode in constants.ALL_DIRECTIONS
     }
     score_values = _score_values(scores)
     evidence_weights = _stripe_evidence_weights(score_values)
@@ -88,7 +68,7 @@ def _validate_fixed_directions(directions: object) -> tuple[int, ...]:
     for mode in directions:
         if isinstance(mode, bool) or not isinstance(mode, int):
             raise ValueError("directions must be a non-empty sequence of unique modes 0..4.")
-        if mode not in _ALL_DIRECTIONS or mode in seen:
+        if mode not in constants.ALL_DIRECTIONS or mode in seen:
             raise ValueError("directions must be a non-empty sequence of unique modes 0..4.")
         normalized.append(mode)
         seen.add(mode)
@@ -123,7 +103,7 @@ def _normalized_gray(gray: np.ndarray) -> np.ndarray:
     lo = float(np.min(arr))
     hi = float(np.max(arr))
     scale = hi - lo
-    if scale <= _EPS:
+    if scale <= constants.EPS:
         return np.zeros_like(arr, dtype=np.float64)
     return (arr - lo) / scale
 
@@ -159,16 +139,16 @@ def _offset_diff(t: torch.Tensor, row_step: int, col_step: int) -> torch.Tensor:
 
 
 def _robust_contrast(t: torch.Tensor) -> float:
-    return float(torch.quantile(t.abs().reshape(-1), 0.90).item()) + _EPS
+    return float(torch.quantile(t.abs().reshape(-1), 0.90).item()) + constants.EPS
 
 
 def _direction_score(t: torch.Tensor, *, mode: int, contrast: float) -> float:
-    parallel = _offset_diff(t, *_PARALLEL_OFFSETS[mode]).abs().reshape(-1)
-    cross_offset = _CROSS_OFFSETS[mode]
+    parallel = _offset_diff(t, *constants.PARALLEL_OFFSETS[mode]).abs().reshape(-1)
+    cross_offset = constants.CROSS_OFFSETS[mode]
     cross = _offset_diff(t, *cross_offset).abs().reshape(-1)
-    parallel_q = float(torch.quantile(parallel, 0.75).item()) + _EPS
-    cross_q = float(torch.quantile(cross, 0.90).item()) + _EPS
-    power_q = float(torch.quantile(t.abs().reshape(-1), 0.90).item()) + _EPS
+    parallel_q = float(torch.quantile(parallel, 0.75).item()) + constants.EPS
+    cross_q = float(torch.quantile(cross, 0.90).item()) + constants.EPS
+    power_q = float(torch.quantile(t.abs().reshape(-1), 0.90).item()) + constants.EPS
     cross_length = math.hypot(*cross_offset)
     return ((cross_q / cross_length) / parallel_q) * (power_q / contrast)
 
@@ -179,12 +159,14 @@ def _select_directions(scores: dict[int, float]) -> tuple[int, ...]:
 
 
 def _score_values(scores: dict[int, float]) -> np.ndarray:
-    return np.array([scores[mode] for mode in _ALL_DIRECTIONS], dtype=np.float64)
+    return np.array(
+        [scores[mode] for mode in constants.ALL_DIRECTIONS], dtype=np.float64
+    )
 
 
 def _standardized_scores(values: np.ndarray) -> np.ndarray:
     scale = float(values.std())
-    if scale <= _EPS:
+    if scale <= constants.EPS:
         return np.zeros_like(values)
     return (values - float(values.mean())) / scale
 
@@ -194,7 +176,7 @@ def _stripe_evidence_weights(values: np.ndarray) -> np.ndarray:
 
 
 def _direction_support_weights(values: np.ndarray) -> np.ndarray:
-    if float(values.max() - values.min()) <= _EPS:
+    if float(values.max() - values.min()) <= constants.EPS:
         weights = np.zeros_like(values)
         weights[int(np.argmax(values))] = 1.0
         return weights
@@ -204,8 +186,8 @@ def _direction_support_weights(values: np.ndarray) -> np.ndarray:
 def _directions_from_weights(weights: np.ndarray) -> tuple[int, ...]:
     support = [
         mode
-        for mode, weight in zip(_ALL_DIRECTIONS, weights)
-        if weight > _EPS
+        for mode, weight in zip(constants.ALL_DIRECTIONS, weights)
+        if weight > constants.EPS
     ]
     if not support:
         return (int(np.argmax(weights)),)
@@ -250,11 +232,11 @@ def _adaptive_strength(*, evidence_strength: float, support_strength: float) -> 
 
 
 def _estimate_mu1(strength: float) -> float:
-    return _linear_interp(MU1_MIN, MU1_MAX, strength)
+    return _linear_interp(constants.MU1_MIN, constants.MU1_MAX, strength)
 
 
 def _estimate_mu2(*, strength: float, ambiguity: float) -> float:
-    return _log_interp(MU2_MIN, MU2_MAX, strength * ambiguity)
+    return _log_interp(constants.MU2_MIN, constants.MU2_MAX, strength * ambiguity)
 
 
 def _linear_interp(lo: float, hi: float, t: float) -> float:

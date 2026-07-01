@@ -1,13 +1,8 @@
 import cv2
 import numpy as np
 
-from .estimate import (
-    MU1_MAX,
-    MU1_MIN,
-    MU2_MAX,
-    MU2_MIN,
-    estimate_adaptive_params,
-)
+from . import constants
+from .estimate import estimate_adaptive_params
 
 
 def estimate_tile_mus(
@@ -49,13 +44,17 @@ def smooth_tile_mus(mus: np.ndarray) -> np.ndarray:
         raise ValueError("mus must have shape (rows, cols, 2).")
 
     clipped = np.asarray(mus, dtype=np.float64).copy()
-    clipped[..., 0] = np.clip(mus[..., 0], MU1_MIN, MU1_MAX)
-    clipped[..., 1] = np.clip(mus[..., 1], MU2_MIN, MU2_MAX)
+    clipped[..., 0] = np.clip(mus[..., 0], constants.MU1_MIN, constants.MU1_MAX)
+    clipped[..., 1] = np.clip(mus[..., 1], constants.MU2_MIN, constants.MU2_MAX)
 
     log_mus = np.log(clipped)
     smoothed = np.exp(
         cv2.blur(log_mus, ksize=(3, 3), borderType=cv2.BORDER_REPLICATE)
     )
-    smoothed[..., 0] = np.clip(smoothed[..., 0], MU1_MIN, MU1_MAX)
-    smoothed[..., 1] = np.clip(smoothed[..., 1], MU2_MIN, MU2_MAX)
+    smoothed[..., 0] = np.clip(
+        smoothed[..., 0], constants.MU1_MIN, constants.MU1_MAX
+    )
+    smoothed[..., 1] = np.clip(
+        smoothed[..., 1], constants.MU2_MIN, constants.MU2_MAX
+    )
     return smoothed
