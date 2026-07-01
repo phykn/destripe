@@ -256,10 +256,10 @@ class TestProcessTiled:
     ) -> None:
         original_mu1, original_mu2 = remover.mu1, remover.mu2
 
-        def fail_process(**_: object) -> torch.Tensor:
+        def fail_solve(**_: object) -> torch.Tensor:
             raise RuntimeError("forced tile failure")
 
-        monkeypatch.setattr(remover, "process", fail_process)
+        monkeypatch.setattr(remover, "_solve", fail_solve)
 
         with pytest.raises(RuntimeError, match="forced tile failure"):
             remover.process_tiled(
@@ -272,6 +272,57 @@ class TestProcessTiled:
 
         assert remover.mu1 == original_mu1
         assert remover.mu2 == original_mu2
+
+    def test_tile_mus_processes_tiles_in_one_batch(
+        self,
+        remover: UniversalStripeRemover,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        calls: list[dict[str, object]] = []
+
+        def fake_solve(**kwargs: object) -> torch.Tensor:
+            data = kwargs["data"]
+            mu1 = kwargs.get("mu1")
+            mu2 = kwargs.get("mu2")
+            assert isinstance(data, torch.Tensor)
+            assert isinstance(mu1, torch.Tensor)
+            assert isinstance(mu2, torch.Tensor)
+            calls.append(
+                {
+                    "shape": tuple(data.shape),
+                    "mu1": mu1.detach().cpu().clone(),
+                    "mu2": mu2.detach().cpu().clone(),
+                }
+            )
+            return data.cpu()
+
+        monkeypatch.setattr(remover, "_solve", fake_solve)
+
+        tile_mus = [
+            (0.10, 0.0017),
+            (0.20, 0.0030),
+            (0.30, 0.0070),
+            (0.40, 0.0170),
+        ]
+        result = remover.process_tiled(
+            image=torch.rand(8, 8),
+            tiles=2,
+            iterations=1,
+            overlap=0,
+            tile_mus=tile_mus,
+        )
+
+        assert result.shape == (8, 8)
+        assert len(calls) == 1
+        assert calls[0]["shape"][0] == 4
+        assert torch.allclose(
+            calls[0]["mu1"].reshape(-1),
+            torch.tensor([0.10, 0.20, 0.30, 0.40]),
+        )
+        assert torch.allclose(
+            calls[0]["mu2"].reshape(-1),
+            torch.tensor([0.0017, 0.0030, 0.0070, 0.0170]),
+        )
 
 
 class TestAdaptiveEstimator:

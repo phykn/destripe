@@ -229,24 +229,19 @@ class UniversalStripeRemover:
                 verbose=verbose,
             )
         else:
-            original_mu1, original_mu2 = self.mu1, self.mu2
-            cleaned_list = []
-            try:
-                for tile, (tile_mu1, tile_mu2) in zip(tile_tensor, validated_tile_mus):
-                    self.mu1 = float(tile_mu1)
-                    self.mu2 = float(tile_mu2)
-                    cleaned_list.append(
-                        self.process(
-                            image=tile,
-                            iterations=iterations,
-                            tol=tol,
-                            proj=proj,
-                            verbose=verbose,
-                        )
-                    )
-            finally:
-                self.mu1, self.mu2 = original_mu1, original_mu2
-            cleaned_tiles = torch.stack(tensors=cleaned_list)
+            tile_mu1, tile_mu2 = self._tile_mu_tensors(
+                tile_mus=validated_tile_mus,
+                ref=tile_tensor,
+            )
+            cleaned_tiles = self._solve(
+                data=tile_tensor,
+                iterations=iterations,
+                tol=tol,
+                proj=proj,
+                verbose=verbose,
+                mu1=tile_mu1,
+                mu2=tile_mu2,
+            )
 
         blend_weight = self._cosine_window(h=tile_h, w=tile_w, margin=overlap_pixels).to(
             device=cleaned_tiles.device, dtype=cleaned_tiles.dtype
@@ -306,6 +301,14 @@ class UniversalStripeRemover:
             self.mu1, self.mu2 = original_mu1, original_mu2
 
     @staticmethod
+    def _tile_mu_tensors(
+        tile_mus: Sequence[tuple[float, float]],
+        ref: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        mus = torch.as_tensor(tile_mus, dtype=ref.dtype)
+        return mus[:, 0], mus[:, 1]
+
+    @staticmethod
     def _validate_tile_mus(
         tile_mus: Sequence[tuple[float, float]],
         expected_count: int,
@@ -349,6 +352,8 @@ class UniversalStripeRemover:
         tol: float,
         proj: bool,
         verbose: bool,
+        mu1: torch.Tensor | None = None,
+        mu2: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if data.is_floating_point():
             data = data.to(device=self.device)
@@ -359,9 +364,11 @@ class UniversalStripeRemover:
         #   standard form: u -= tau * K^T p_bar
         #   here: step = tau * sigma is used with sigma-scaled duals
         step_size = self.tau * self.sigma
-        tv_dual_radius = self.mu1 / self.sigma
+        mu1_tensor = self._solver_mu_tensor(value=mu1, fallback=self.mu1, ref=data)
+        mu2_tensor = self._solver_mu_tensor(value=mu2, fallback=self.mu2, ref=data)
+        tv_dual_radius = mu1_tensor / self.sigma
         dir_dual_clip = 1.0 / self.sigma
-        l2_dual_clip = self.mu2 / self.sigma
+        l2_dual_clip = mu2_tensor / self.sigma
         eps = 1e-9
 
         num_stripes = len(self.directions)
@@ -460,11 +467,16 @@ class UniversalStripeRemover:
                     )
 
                     l2_dual_bar[component_idx].copy_(l2_dual[component_idx])
-                    l2_dual[component_idx].add_(
-                        stripe_components[component_idx]
-                    ).clamp_(
-                        min=-l2_dual_clip,
-                        max=l2_dual_clip,
+                    l2_dual[component_idx].add_(stripe_components[component_idx])
+                    torch.maximum(
+                        l2_dual[component_idx],
+                        -l2_dual_clip,
+                        out=l2_dual[component_idx],
+                    )
+                    torch.minimum(
+                        l2_dual[component_idx],
+                        l2_dual_clip,
+                        out=l2_dual[component_idx],
                     )
                     l2_dual_bar[component_idx].mul_(-1).add_(
                         l2_dual[component_idx], alpha=2
@@ -484,6 +496,25 @@ class UniversalStripeRemover:
             print("")
 
         return clean.cpu()
+
+    @staticmethod
+    def _solver_mu_tensor(
+        *,
+        value: torch.Tensor | None,
+        fallback: float,
+        ref: torch.Tensor,
+    ) -> torch.Tensor:
+        if value is None:
+            return torch.as_tensor(fallback, dtype=ref.dtype, device=ref.device)
+
+        out = torch.as_tensor(value, dtype=ref.dtype, device=ref.device)
+        if out.dim() == 0:
+            return out
+        if out.dim() == 1 and out.numel() == ref.shape[0]:
+            return out.reshape(-1, 1, 1)
+        if out.shape == (ref.shape[0], 1, 1):
+            return out
+        raise ValueError("mu tensor must be scalar or match the batch size.")
 
     # --- Validation ---
 
