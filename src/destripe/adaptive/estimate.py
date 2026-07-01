@@ -2,8 +2,15 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from . import directions, preprocess, strength
 from .constants import ALL_DIRECTIONS
+from .directions import (
+    make_score_weights,
+    make_selection_weights,
+    score_directions,
+    select_directions,
+)
+from .preprocess import extract_high_pass, make_analysis_tensor
+from .strength import estimate_strength
 
 
 @dataclass(frozen=True)
@@ -24,17 +31,17 @@ def estimate_adaptive_params(
         if fixed_directions is None
         else _validate_fixed_modes(fixed_directions)
     )
-    analysis = preprocess.make_analysis_tensor(gray)
-    high_pass = preprocess.extract_high_pass(analysis)
-    scores = directions.score_directions(high_pass)
-    score_weights = directions.make_score_weights(scores)
-    selection_weights = directions.make_selection_weights(scores)
+    analysis = make_analysis_tensor(gray)
+    high_pass = extract_high_pass(analysis)
+    scores = score_directions(high_pass)
+    score_weights = make_score_weights(scores)
+    selection_weights = make_selection_weights(scores)
     selected = (
-        directions.select_directions(selection_weights)
+        select_directions(selection_weights)
         if fixed is None
         else fixed
     )
-    mu1, mu2, confidence = strength.estimate_strength(
+    mu1, mu2, confidence = estimate_strength(
         high_pass=high_pass,
         selected_directions=tuple(selected),
         score_weights=score_weights,

@@ -3,8 +3,8 @@ import math
 import numpy as np
 import torch
 
-from . import stripe
 from .constants import EPS, MU1_MAX, MU1_MIN, MU2_MAX, MU2_MIN
+from .stripe import measure_parallel, measure_tv, project
 
 
 def estimate_strength(
@@ -68,13 +68,13 @@ def _measure_stripe(
     tv_costs = []
     weights = []
     for mode in selected_directions:
-        stripe_img = stripe.project(high_pass, mode)
+        stripe_img = project(high_pass, mode)
         stripe_amp = float(stripe_img.abs().mean().item())
         residual_amp = float((high_pass - stripe_img).abs().mean().item())
         coherences.append(stripe_amp / (stripe_amp + residual_amp + EPS))
         amplitudes.append(stripe_amp)
-        parallel_costs.append(stripe.measure_parallel(stripe_img, mode))
-        tv_costs.append(stripe.measure_tv(stripe_img))
+        parallel_costs.append(measure_parallel(stripe_img, mode))
+        tv_costs.append(measure_tv(stripe_img))
         weights.append(float(selection_weights[mode]))
 
     if not coherences:

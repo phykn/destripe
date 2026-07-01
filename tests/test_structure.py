@@ -40,13 +40,14 @@ def test_adaptive_constants_live_in_constants_module() -> None:
     assert not hasattr(estimate, "_MU1_MIN")
 
 
-def test_adaptive_modules_import_constants_directly() -> None:
-    root = Path(__file__).resolve().parents[1] / "src" / "destripe" / "adaptive"
+def test_source_modules_use_direct_relative_imports() -> None:
+    root = Path(__file__).resolve().parents[1] / "src" / "destripe"
 
-    for path in root.glob("*.py"):
+    for path in root.rglob("*.py"):
         if path.name == "constants.py":
             continue
         source = path.read_text(encoding="utf-8")
+        assert "from . import " not in source
         assert "from . import constants" not in source
 
 

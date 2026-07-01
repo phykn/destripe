@@ -6,7 +6,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from . import operators
+from .operators import adjoint_dir, adjoint_grad, dir_diff, forward_diff
 
 
 DIRECTION_MODES = (0, 1, 2, 3, 4)
@@ -339,7 +339,7 @@ class UniversalStripeRemover:
                 if verbose:
                     print(f"\rIteration: {iteration_idx + 1} / {iterations}", end="")
 
-                operators.adjoint_grad(
+                adjoint_grad(
                     target=clean,
                     p_h=grad_row_bar,
                     p_v=grad_col_bar,
@@ -347,7 +347,7 @@ class UniversalStripeRemover:
                 )
 
                 for component_idx, mode in enumerate(self.directions):
-                    operators.adjoint_dir(
+                    adjoint_dir(
                         target=stripe_components[component_idx],
                         q=dir_dual_bar[component_idx],
                         mode=mode,
@@ -378,9 +378,9 @@ class UniversalStripeRemover:
                 grad_row_bar.copy_(grad_row)
                 grad_col_bar.copy_(grad_col)
 
-                operators.forward_diff(x=clean, dim=1, out=scratch)
+                forward_diff(x=clean, dim=1, out=scratch)
                 grad_row.add_(scratch)
-                operators.forward_diff(x=clean, dim=2, out=scratch)
+                forward_diff(x=clean, dim=2, out=scratch)
                 grad_col.add_(scratch)
 
                 torch.mul(grad_row, grad_row, out=grad_norm)
@@ -396,7 +396,7 @@ class UniversalStripeRemover:
 
                 for component_idx, mode in enumerate(self.directions):
                     dir_dual_bar[component_idx].copy_(dir_dual[component_idx])
-                    operators.dir_diff(
+                    dir_diff(
                         x=stripe_components[component_idx],
                         mode=mode,
                         out=directional_diff,
