@@ -12,11 +12,6 @@ PDHG-based stripe-noise removal for NumPy images, backed by PyTorch. The solver 
 - Supports `n x n` tiled processing with cosine-blended overlap for large images.
 - Uses CUDA when available if `device=None`; otherwise falls back to CPU.
 
-## Install
-```bash
-pip install destripe
-```
-
 ## Quick Start
 ```python
 from destripe import destripe
@@ -31,6 +26,55 @@ clean = destripe(
     device="cpu",  # "cpu", "cuda", or None to auto-select
 )
 ```
+
+## Adaptive Mode
+Adaptive mode is the recommended default for exploratory use. It estimates a
+sparse set of stripe directions and chooses `mu1` / `mu2` from the image, then
+runs the solver with only the selected directions.
+
+```python
+clean = destripe(
+    image,
+    adaptive=True,
+    iterations=500,
+)
+```
+
+If `adaptive=True`, any explicit `directions`, `mu1`, or `mu2` values are
+ignored with a warning.
+
+## Tiled Processing
+Use tiled processing for large images or locally varying stripe strength.
+Adaptive mode keeps a global direction set and estimates smoothed tile-local
+`mu` values.
+
+```python
+clean = destripe(
+    image,
+    adaptive=True,
+    tiles=3,
+    overlap=64,
+)
+```
+
+Tile-local `mu` values are processed as a batch, so `tiles > 1` does not force a
+separate solver run per tile.
+
+## Manual Mode
+Manual mode is useful when the stripe direction and regularization strength are
+known.
+
+```python
+clean = destripe(
+    image,
+    directions=[0],  # 0=vertical, 1..4=diagonal modes
+    mu1=0.33,
+    mu2=0.003,
+    iterations=500,
+)
+```
+
+When `adaptive=False`, `directions=None` keeps all five modes active.
 
 ## Parameters
 - `image`: numeric NumPy-compatible array with shape `(H, W)`, `(H, W, 1)`, or `(H, W, 3)`.
