@@ -1,6 +1,4 @@
-"""Adaptive direction and parameter estimation for destriping."""
-
-from __future__ import annotations
+"""Image-driven direction and parameter estimation."""
 
 from dataclasses import dataclass
 import math
@@ -98,31 +96,6 @@ def _validate_fixed_directions(directions: object) -> tuple[int, ...]:
     if not normalized:
         raise ValueError("directions must be a non-empty sequence of unique modes 0..4.")
     return tuple(normalized)
-
-
-def smooth_tile_mus(mus: np.ndarray) -> np.ndarray:
-    if mus.ndim != 3 or mus.shape[-1] != 2:
-        raise ValueError("mus must have shape (rows, cols, 2).")
-
-    clipped = np.empty_like(mus, dtype=np.float64)
-    clipped[..., 0] = np.clip(mus[..., 0], _MU1_MIN, _MU1_MAX)
-    clipped[..., 1] = np.clip(mus[..., 1], _MU2_MIN, _MU2_MAX)
-
-    log_mus = np.log(clipped)
-    padded = np.pad(log_mus, ((1, 1), (1, 1), (0, 0)), mode="edge")
-    out = np.zeros_like(log_mus)
-    for row_offset in range(3):
-        for col_offset in range(3):
-            out += padded[
-                row_offset : row_offset + log_mus.shape[0],
-                col_offset : col_offset + log_mus.shape[1],
-                :,
-            ]
-    out /= 9.0
-    smoothed = np.exp(out)
-    smoothed[..., 0] = np.clip(smoothed[..., 0], _MU1_MIN, _MU1_MAX)
-    smoothed[..., 1] = np.clip(smoothed[..., 1], _MU2_MIN, _MU2_MAX)
-    return smoothed
 
 
 def _analysis_tensor(gray: np.ndarray) -> torch.Tensor:

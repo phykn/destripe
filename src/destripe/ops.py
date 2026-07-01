@@ -1,55 +1,12 @@
 from collections.abc import Sequence
-import numbers
 import warnings
 
-import cv2
 import numpy as np
 import torch
 
-from .adaptive import estimate_adaptive_params, smooth_tile_mus
+from .adaptive import estimate_adaptive_params, estimate_tile_mus
 from .core import UniversalStripeRemover
-
-# Rec. 601 luma coefficients (standard for NTSC/JPEG grayscale conversion)
-_LUMA_R = 0.2989
-_LUMA_G = 0.5870
-_LUMA_B = 0.1140
-
-
-def _estimate_tile_mus(
-    gray: np.ndarray,
-    *,
-    tiles: int,
-    directions: tuple[int, ...],
-) -> list[tuple[float, float]]:
-    if tiles <= 1:
-        return []
-    h, w = gray.shape
-    pad_h = (tiles - h % tiles) % tiles
-    pad_w = (tiles - w % tiles) % tiles
-    pad_mode = (
-        "edge"
-        if ((pad_h > 0 and h <= 1) or (pad_w > 0 and w <= 1))
-        else "reflect"
-    )
-    padded = np.pad(gray, ((0, pad_h), (0, pad_w)), mode=pad_mode)
-    core_h = padded.shape[0] // tiles
-    core_w = padded.shape[1] // tiles
-    mus = np.empty((tiles, tiles, 2), dtype=np.float64)
-    for row in range(tiles):
-        for col in range(tiles):
-            tile = padded[
-                row * core_h : (row + 1) * core_h,
-                col * core_w : (col + 1) * core_w,
-            ]
-            params = estimate_adaptive_params(tile, fixed_directions=directions)
-            mus[row, col, 0] = params.mu1
-            mus[row, col, 1] = params.mu2
-    smoothed = smooth_tile_mus(mus)
-    return [
-        (float(smoothed[row, col, 0]), float(smoothed[row, col, 1]))
-        for row in range(tiles)
-        for col in range(tiles)
-    ]
+from .image_ops import resize_2d, rgb_to_luma, solver_gray, validate_process_size
 
 
 def destripe(
@@ -109,7 +66,7 @@ def destripe(
     if not np.isfinite(input_array).all():
         raise ValueError("image must not contain NaN or Inf values.")
 
-    process_size_value = _validate_process_size(process_size)
+    process_size_value = validate_process_size(process_size)
     manual_mu1 = mu1 is not None
     manual_mu2 = mu2 is not None
     manual_directions = directions is not None
@@ -152,11 +109,7 @@ def destripe(
         )
     elif normalized.ndim == 3 and normalized.shape[2] in {1, 3}:
         if normalized.shape[2] == 3:
-            gray = (
-                _LUMA_R * normalized[..., 0]
-                + _LUMA_G * normalized[..., 1]
-                + _LUMA_B * normalized[..., 2]
-            )
+            gray = rgb_to_luma(normalized)
         else:
             gray = normalized[..., 0]
 
@@ -210,9 +163,9 @@ def _destripe_grayscale(
     verbose: bool,
     process_size: int | None,
 ) -> np.ndarray:
-    solver_gray = _solver_gray(gray=gray, process_size=process_size)
+    processed_gray = solver_gray(gray=gray, process_size=process_size)
     remover = _make_remover(
-        gray=solver_gray,
+        gray=processed_gray,
         adaptive=adaptive,
         mu1=mu1,
         mu2=mu2,
@@ -221,14 +174,14 @@ def _destripe_grayscale(
     )
     tile_mus = None
     if adaptive and tiles > 1:
-        tile_mus = _estimate_tile_mus(
-            gray=solver_gray,
+        tile_mus = estimate_tile_mus(
+            gray=processed_gray,
             tiles=tiles,
             directions=remover.directions,
         )
     solver_clean = _run_grayscale(
         remover=remover,
-        gray=solver_gray,
+        gray=processed_gray,
         iterations=iterations,
         tol=tol,
         tiles=tiles,
@@ -238,11 +191,11 @@ def _destripe_grayscale(
         tile_mus=tile_mus,
     )
 
-    if solver_gray.shape == gray.shape:
+    if processed_gray.shape == gray.shape:
         return solver_clean
 
-    stripe = solver_gray - solver_clean
-    full_stripe = _resize_2d(stripe, size=gray.shape, mode="lanczos")
+    stripe = processed_gray - solver_clean
+    full_stripe = resize_2d(stripe, size=gray.shape, mode="lanczos")
     clean = gray - full_stripe
     if proj:
         clean = np.clip(clean, 0.0, 1.0)
@@ -296,63 +249,3 @@ def _run_grayscale(
         tile_mus=tile_mus,
     )
     return out.numpy()
-
-
-def _validate_process_size(process_size: int | None) -> int | None:
-    if process_size is None:
-        return None
-    if isinstance(process_size, bool) or not isinstance(process_size, numbers.Integral):
-        raise ValueError("process_size must be None or an integer greater than 1.")
-    value = int(process_size)
-    if value <= 1:
-        raise ValueError("process_size must be None or an integer greater than 1.")
-    return value
-
-
-def _solver_gray(*, gray: np.ndarray, process_size: int | None) -> np.ndarray:
-    size = _process_shape(gray.shape, process_size)
-    if size == gray.shape:
-        return gray
-    return np.clip(_resize_2d(gray, size=size, mode="lanczos"), 0.0, 1.0)
-
-
-def _process_shape(
-    shape: tuple[int, int], process_size: int | None
-) -> tuple[int, int]:
-    if process_size is None:
-        return shape
-    h, w = shape
-    long_edge = max(h, w)
-    if process_size >= long_edge:
-        return shape
-    scale = process_size / long_edge
-    if h >= w:
-        return process_size, _scaled_dim(w, scale)
-    return _scaled_dim(h, scale), process_size
-
-
-def _scaled_dim(dim: int, scale: float) -> int:
-    if dim <= 1:
-        return dim
-    return max(2, int(np.floor(dim * scale + 0.5)))
-
-
-def _resize_2d(
-    image: np.ndarray,
-    *,
-    size: tuple[int, int],
-    mode: str,
-) -> np.ndarray:
-    if image.shape == size:
-        return np.asarray(image, dtype=np.float64).copy()
-
-    if mode != "lanczos":
-        raise ValueError(f"unsupported resize mode: {mode}")
-
-    array = np.asarray(image, dtype=np.float64)
-    resized = cv2.resize(
-        array,
-        dsize=(size[1], size[0]),
-        interpolation=cv2.INTER_LANCZOS4,
-    )
-    return np.asarray(resized, dtype=np.float64).reshape(size)
