@@ -26,12 +26,9 @@ _CROSS_OFFSETS = {
 }
 
 _MU1_MIN = 0.10
-_MU1_ANCHOR = 0.33
 _MU1_MAX = 0.50
 _MU2_MIN = 0.0017
-_MU2_ANCHOR = 0.003
 _MU2_MAX = 0.017
-_STRENGTH_ANCHOR_SCORE = 1.9
 _EPS = 1e-9
 
 
@@ -61,21 +58,15 @@ def estimate_adaptive_params(
         mode: _direction_score(high_pass, mode=mode, contrast=contrast)
         for mode in _ALL_DIRECTIONS
     }
+    score_values = _score_values(scores)
+    distribution = _sparsemax(score_values)
     directions = _select_directions(scores) if fixed is None else fixed
-    selected_scores = [scores[mode] for mode in directions]
-    top_score = max(selected_scores)
-    selected_ranked = sorted(selected_scores, reverse=True)
-    second_score = selected_ranked[1] if len(selected_ranked) > 1 else 0.0
-    ambiguity = _ambiguity_score(selected_scores=selected_scores)
 
-    strength = _stripe_strength(top_score)
+    strength = _distribution_concentration(distribution)
+    ambiguity = _distribution_entropy(distribution)
     mu1 = _estimate_mu1(strength)
     mu2 = _estimate_mu2(strength=strength, ambiguity=ambiguity)
-    confidence = _confidence(
-        top_score=top_score,
-        second_score=second_score,
-        ambiguity=ambiguity,
-    )
+    confidence = strength * (1.0 - ambiguity)
     return AdaptiveParams(
         directions=tuple(directions),
         mu1=mu1,
@@ -204,45 +195,71 @@ def _direction_score(t: torch.Tensor, *, mode: int, contrast: float) -> float:
 
 
 def _select_directions(scores: dict[int, float]) -> tuple[int, ...]:
-    ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
-    top_mode, top_score = ranked[0]
-    directions = [top_mode]
-    if ranked[1][1] >= 0.85 * top_score and ranked[1][1] >= 1.15:
-        directions.append(ranked[1][0])
-    return tuple(directions)
+    weights = _sparsemax(_standardized_scores(_score_values(scores)))
+    support = [
+        mode
+        for mode, weight in zip(_ALL_DIRECTIONS, weights)
+        if weight > _EPS
+    ]
+    if not support:
+        top_mode = max(scores, key=scores.__getitem__)
+        return (top_mode,)
+    return tuple(
+        sorted(support, key=lambda mode: (-weights[mode], mode))
+    )
 
 
-def _stripe_strength(score: float) -> float:
-    anchor_span = _STRENGTH_ANCHOR_SCORE - 1.0
-    return min(1.0, max(0.0, (score - 1.0) / (2.0 * anchor_span)))
+def _score_values(scores: dict[int, float]) -> np.ndarray:
+    return np.array([scores[mode] for mode in _ALL_DIRECTIONS], dtype=np.float64)
+
+
+def _standardized_scores(values: np.ndarray) -> np.ndarray:
+    scale = float(values.std())
+    if scale <= _EPS:
+        return np.zeros_like(values)
+    return (values - float(values.mean())) / scale
+
+
+def _sparsemax(values: np.ndarray) -> np.ndarray:
+    shifted = values - float(values.mean())
+    sorted_values = np.sort(shifted)[::-1]
+    cumulative = np.cumsum(sorted_values)
+    ranks = np.arange(1, len(sorted_values) + 1, dtype=np.float64)
+    support = sorted_values + (1.0 - cumulative) / ranks > 0.0
+    if not np.any(support):
+        out = np.zeros_like(shifted)
+        out[int(np.argmax(shifted))] = 1.0
+        return out
+    support_size = int(np.nonzero(support)[0][-1]) + 1
+    threshold = (cumulative[support_size - 1] - 1.0) / support_size
+    return np.maximum(shifted - threshold, 0.0)
+
+
+def _distribution_concentration(weights: np.ndarray) -> float:
+    uniform_power = 1.0 / len(weights)
+    power = float(np.sum(weights * weights))
+    return min(1.0, max(0.0, (power - uniform_power) / (1.0 - uniform_power)))
+
+
+def _distribution_entropy(weights: np.ndarray) -> float:
+    positive = weights[weights > 0.0]
+    if positive.size <= 1:
+        return 0.0
+    entropy = -float(np.sum(positive * np.log(positive)))
+    return min(1.0, max(0.0, entropy / math.log(len(weights))))
 
 
 def _estimate_mu1(strength: float) -> float:
-    if strength <= 0.5:
-        return _log_interp(_MU1_MIN, _MU1_ANCHOR, strength / 0.5)
-    return _log_interp(_MU1_ANCHOR, _MU1_MAX, (strength - 0.5) / 0.5)
+    return _linear_interp(_MU1_MIN, _MU1_MAX, strength)
 
 
 def _estimate_mu2(*, strength: float, ambiguity: float) -> float:
-    base = _log_interp(_MU2_MIN, _MU2_ANCHOR, min(1.0, strength / 0.5))
-    if ambiguity <= 0.5:
-        return base
-    return _log_interp(base, _MU2_MAX, (ambiguity - 0.5) / 0.5)
+    return _log_interp(_MU2_MIN, _MU2_MAX, strength * ambiguity)
 
 
-def _ambiguity_score(*, selected_scores: list[float]) -> float:
-    ranked = sorted(selected_scores, reverse=True)
-    top = ranked[0] + _EPS
-    second = ranked[1] if len(ranked) > 1 else 0.0
-    direction_confusion = second / top
-    multi_direction_penalty = 0.25 if len(selected_scores) > 1 else 0.0
-    return min(1.0, max(0.0, direction_confusion + multi_direction_penalty))
-
-
-def _confidence(*, top_score: float, second_score: float, ambiguity: float) -> float:
-    dominance = 1.0 - min(1.0, second_score / (top_score + _EPS))
-    strength = min(1.0, max(0.0, (top_score - 1.0) / 3.0))
-    return min(1.0, max(0.0, 0.5 * dominance + 0.5 * strength - 0.25 * ambiguity))
+def _linear_interp(lo: float, hi: float, t: float) -> float:
+    t = min(1.0, max(0.0, t))
+    return float(lo * (1.0 - t) + hi * t)
 
 
 def _log_interp(lo: float, hi: float, t: float) -> float:

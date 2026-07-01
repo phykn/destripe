@@ -52,7 +52,9 @@ clean = destripe(
 - Typical to strong stripes: `[0.33, 0.003]`, `[0.4, 0.007]`
 - Severe corruption / short stripes: `[0.5, 0.017]`
 
-Adaptive mode clamps its estimates to the documented range. These pairs remain manual-mode anchors, not guaranteed optima.
+Adaptive mode uses sparse direction support plus score concentration and entropy
+to map each image into the documented literature range. The pairs above are
+manual-mode examples, not adaptive tuning anchors.
 
 ## Reference
 - https://github.com/NiklasRottmayer/General-Stripe-Removal

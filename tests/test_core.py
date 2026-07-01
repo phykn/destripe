@@ -270,7 +270,6 @@ class TestAdaptiveEstimator:
         params = estimate_adaptive_params(img)
         assert params.directions[0] == 0
         assert params.mu1 >= 0.33
-        assert params.mu2 >= 0.003 - 1e-12
         assert 0.10 <= params.mu1 <= 0.50
         assert 0.0017 <= params.mu2 <= 0.017
 
@@ -295,7 +294,14 @@ class TestAdaptiveEstimator:
         assert p1.mu2 == pytest.approx(p2.mu2)
         assert p1.confidence == pytest.approx(p2.confidence)
 
-    def test_fixed_directions_drive_mu2_ambiguity(self) -> None:
+    def test_direction_support_uses_relative_scores_without_cutoffs(self) -> None:
+        from destripe.adaptive import _select_directions
+
+        scores = {0: 0.20, 1: 0.19, 2: -1.0, 3: -1.0, 4: -1.0}
+
+        assert _select_directions(scores) == (0, 1)
+
+    def test_fixed_directions_do_not_add_count_penalty(self) -> None:
         img = np.zeros((64, 64), dtype=np.float64)
         img[:, 12] = 1.0
         img[:, 32] = 0.8
@@ -305,8 +311,8 @@ class TestAdaptiveEstimator:
 
         assert single.directions == (0,)
         assert multiple.directions == (0, 1)
-        assert single.mu2 >= 0.003 - 1e-12
-        assert multiple.mu2 > single.mu2
+        assert single.mu1 == pytest.approx(multiple.mu1)
+        assert single.mu2 == pytest.approx(multiple.mu2)
 
     @pytest.mark.parametrize("shape", [(1, 1), (3, 8), (8, 3)])
     def test_estimator_handles_small_arrays(self, shape: tuple[int, int]) -> None:
