@@ -162,6 +162,9 @@ def test_core_is_package_with_remover_and_operators() -> None:
     assert "def adjoint_grad(" in operator_source
     assert "def adjoint_dir(" in operator_source
     assert "scale:" in operator_source
+    assert "_NUM_DIRS" not in remover_source
+    assert "_ALL_DIRECTIONS" not in remover_source
+    assert "DIRECTION_MODES = (0, 1, 2, 3, 4)" in remover_source
     assert "def _forward_diff(" not in remover_source
     assert "def _dir_diff(" not in remover_source
     assert "def _adjoint_" not in remover_source

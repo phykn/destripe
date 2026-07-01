@@ -9,8 +9,7 @@ import torch.nn.functional as F
 from . import operators
 
 
-_NUM_DIRS = 5
-_ALL_DIRECTIONS = tuple(range(_NUM_DIRS))
+DIRECTION_MODES = (0, 1, 2, 3, 4)
 
 
 class UniversalStripeRemover:
@@ -470,7 +469,7 @@ class UniversalStripeRemover:
     @staticmethod
     def _validate_directions(directions: Sequence[int] | None) -> tuple[int, ...]:
         if directions is None:
-            return _ALL_DIRECTIONS
+            return DIRECTION_MODES
         if not isinstance(directions, Sequence):
             raise ValueError("directions must be None or a sequence of integers.")
 
@@ -486,7 +485,7 @@ class UniversalStripeRemover:
         for mode in values:
             if not isinstance(mode, int) or isinstance(mode, bool):
                 raise ValueError("directions must contain integers in the range 0..4.")
-            if mode < 0 or mode >= _NUM_DIRS:
+            if mode not in DIRECTION_MODES:
                 raise ValueError("directions must contain integers in the range 0..4.")
         if len(set(values)) != len(values):
             raise ValueError("directions must not contain duplicates.")
