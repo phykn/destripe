@@ -144,6 +144,13 @@ def test_ops_module_keeps_flow_direct_and_docstring_concise() -> None:
     assert "Returns:\n        Destriped image with the same shape and dtype." in source
 
 
+def test_core_module_does_not_use_section_marker_comments() -> None:
+    root = Path(__file__).resolve().parents[1] / "src" / "destripe"
+    source = (root / "core.py").read_text(encoding="utf-8")
+
+    assert "# ---" not in source
+
+
 def test_source_files_do_not_use_future_imports() -> None:
     root = Path(__file__).resolve().parents[1] / "src" / "destripe"
     offenders = [

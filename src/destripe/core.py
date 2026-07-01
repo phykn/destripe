@@ -43,8 +43,6 @@ class UniversalStripeRemover:
         self.tau = 0.35
         self.sigma = 0.35
 
-    # --- Public API ---
-
     def process(
         self,
         image: torch.Tensor | np.ndarray,
@@ -343,8 +341,6 @@ class UniversalStripeRemover:
             validated.append((mu1_float, mu2_float))
         return validated
 
-    # --- Solver ---
-
     def _solve(
         self,
         data: torch.Tensor,
@@ -516,8 +512,6 @@ class UniversalStripeRemover:
             return out
         raise ValueError("mu tensor must be scalar or match the batch size.")
 
-    # --- Validation ---
-
     @staticmethod
     def _validate_solver_params(iterations: int, tol: float) -> None:
         if not isinstance(iterations, int) or iterations <= 0:
@@ -561,8 +555,6 @@ class UniversalStripeRemover:
     def _validate_finite_tensor(name: str, x: torch.Tensor) -> None:
         if not torch.isfinite(x).all():
             raise ValueError(f"{name} must not contain NaN or Inf values.")
-
-    # --- Differential operators ---
 
     @staticmethod
     def _forward_diff(
@@ -656,8 +648,6 @@ class UniversalStripeRemover:
         elif mode == 4:
             target[:, 1:, :-1].sub_(q[:, :-1, 1:], alpha=a)
             target[:, :-1, 1:].add_(q[:, :-1, 1:], alpha=a)
-
-    # --- Tensor utilities ---
 
     @staticmethod
     def _to_tensor(
