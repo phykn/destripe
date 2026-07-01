@@ -17,6 +17,16 @@ def test_adaptive_local_module_owns_tile_local_estimation() -> None:
     assert not (root / "tiles.py").exists()
 
 
+def test_adaptive_local_module_avoids_manual_nested_window_loops() -> None:
+    root = Path(__file__).resolve().parents[1] / "src" / "destripe" / "adaptive"
+    source = (root / "local.py").read_text(encoding="utf-8")
+
+    assert "row_offset" not in source
+    assert "col_offset" not in source
+    assert "for row in range(tiles)" not in source
+    assert "for col in range(tiles)" not in source
+
+
 def test_shared_adaptive_mu_bounds_are_not_private_names() -> None:
     from destripe.adaptive import estimate
 
