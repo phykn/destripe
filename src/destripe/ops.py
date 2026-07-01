@@ -31,39 +31,26 @@ def destripe(
 ) -> np.ndarray:
     """Remove stripe noise from a NumPy image.
 
-    Supports grayscale ``(H, W)`` and color ``(H, W, C)`` images where
-    ``C in {1, 3}``. For RGB inputs, stripe estimates are computed on the
-    luminance channel and then subtracted from each color channel.
+    Supports grayscale, single-channel, and RGB arrays. RGB stripes are
+    estimated from luma and subtracted from every channel.
 
     Args:
-        image: Input image array.
-        mu1: TV regularization weight. Uses the manual default when ``None``.
-            Ignored when ``adaptive`` is true.
-        mu2: L2 stripe penalty weight. Uses the manual default when ``None``.
-            Ignored when ``adaptive`` is true.
-        iterations: Maximum PDHG iterations. Must be positive.
-        tol: Relative convergence tolerance. Must be non-negative.
-        tiles: Number of tiles per image side. Must be positive.
-        overlap: Overlap width between neighboring tiles. Must be non-negative.
-        process_size: Optional long-edge size for the solver image. ``None``
-            keeps the original resolution. Integers smaller than the input
-            long edge resize the grayscale/luminance solver image while
-            preserving aspect ratio, then upsample only the estimated stripe
-            component and subtract it from the original-resolution image.
-        proj: Whether to project the clean component onto ``[0, 1]``.
-        device: Computation device for the underlying torch solver.
-        verbose: Whether to print iteration progress.
-        adaptive: Whether to use adaptive parameter estimation.
-        directions: Stripe direction modes to use. ``None`` uses all modes.
-            Ignored when ``adaptive`` is true.
+        image: Input image.
+        mu1: Manual TV weight; ignored when adaptive=True.
+        mu2: Manual L2 stripe penalty; ignored when adaptive=True.
+        iterations: Maximum PDHG iterations.
+        tol: Relative convergence tolerance.
+        tiles: Tiles per image side.
+        overlap: Tile overlap in pixels.
+        process_size: Long-edge solver size; None keeps original resolution.
+        proj: Project output to [0, 1].
+        device: Torch device.
+        verbose: Print solver progress.
+        adaptive: Estimate directions and mu values from the image.
+        directions: Manual stripe modes; ignored when adaptive=True.
 
     Returns:
-        Destriped image with the same shape and dtype as
-        ``np.asarray(image)``.
-
-    Raises:
-        ValueError: If image rank/channels are unsupported, the input contains
-            non-finite values, or solver/tile parameters are invalid.
+        Destriped image with the same shape and dtype.
     """
     input_array = np.asarray(image)
     if not np.issubdtype(input_array.dtype, np.number):
@@ -72,11 +59,13 @@ def destripe(
         raise ValueError("image must not contain NaN or Inf values.")
 
     process_size_value = validate_process_size(process_size)
-    manual_mu1 = mu1 is not None
-    manual_mu2 = mu2 is not None
-    manual_directions = directions is not None
+    manual_args_used = (
+        mu1 is not None
+        or mu2 is not None
+        or directions is not None
+    )
 
-    if adaptive and (manual_mu1 or manual_mu2 or manual_directions):
+    if adaptive and manual_args_used:
         warnings.warn(
             "adaptive=True ignores manual directions, mu1, and mu2 values.",
             UserWarning,
@@ -184,17 +173,16 @@ def _destripe_grayscale(
             tiles=tiles,
             directions=remover.directions,
         )
-    solver_clean = _run_grayscale(
-        remover=remover,
-        gray=processed_gray,
+    solver_clean = remover.process_tiled(
+        image=processed_gray,
+        tiles=tiles,
         iterations=iterations,
         tol=tol,
-        tiles=tiles,
         overlap=overlap,
         proj=proj,
         verbose=verbose,
         tile_mus=tile_mus,
-    )
+    ).numpy()
 
     if processed_gray.shape == gray.shape:
         return solver_clean
@@ -230,27 +218,3 @@ def _make_remover(
         device=device,
         directions=directions,
     )
-
-
-def _run_grayscale(
-    remover: UniversalStripeRemover,
-    gray: np.ndarray,
-    iterations: int,
-    tol: float,
-    tiles: int,
-    overlap: int,
-    proj: bool,
-    verbose: bool,
-    tile_mus: list[tuple[float, float]] | None = None,
-) -> np.ndarray:
-    out = remover.process_tiled(
-        image=gray,
-        tiles=tiles,
-        iterations=iterations,
-        tol=tol,
-        overlap=overlap,
-        proj=proj,
-        verbose=verbose,
-        tile_mus=tile_mus,
-    )
-    return out.numpy()

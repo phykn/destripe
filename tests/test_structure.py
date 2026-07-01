@@ -130,6 +130,20 @@ def test_preprocess_module_exposes_image_preprocess_helpers() -> None:
     assert "unsupported resize mode" not in source
 
 
+def test_ops_module_keeps_flow_direct_and_docstring_concise() -> None:
+    root = Path(__file__).resolve().parents[1] / "src" / "destripe"
+    source = (root / "ops.py").read_text(encoding="utf-8")
+
+    assert "def _run_grayscale(" not in source
+    assert "manual_args_used" in source
+    assert "manual_mu1" not in source
+    assert "manual_mu2" not in source
+    assert "manual_directions" not in source
+    assert "process_size: Long-edge solver size; None keeps original resolution." in source
+    assert "preserving aspect ratio, then upsample" not in source
+    assert "Returns:\n        Destriped image with the same shape and dtype." in source
+
+
 def test_source_files_do_not_use_future_imports() -> None:
     root = Path(__file__).resolve().parents[1] / "src" / "destripe"
     offenders = [
