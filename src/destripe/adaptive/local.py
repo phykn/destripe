@@ -1,5 +1,3 @@
-"""Tile-local adaptive parameter estimation."""
-
 import numpy as np
 
 from .estimate import (

@@ -10,6 +10,13 @@ def test_adaptive_is_package_with_public_exports() -> None:
     assert callable(adaptive.estimate_tile_mus)
 
 
+def test_adaptive_local_module_owns_tile_local_estimation() -> None:
+    root = Path(__file__).resolve().parents[1] / "src" / "destripe" / "adaptive"
+
+    assert (root / "local.py").exists()
+    assert not (root / "tiles.py").exists()
+
+
 def test_image_ops_module_exposes_process_size_helpers() -> None:
     from destripe import image_ops
 
