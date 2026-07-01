@@ -114,14 +114,20 @@ def test_preprocess_module_exposes_image_preprocess_helpers() -> None:
     from destripe import preprocess
 
     root = Path(__file__).resolve().parents[1] / "src" / "destripe"
+    source = (root / "preprocess.py").read_text(encoding="utf-8")
 
     assert (root / "preprocess.py").exists()
     assert not (root / "image_ops.py").exists()
     assert preprocess.validate_process_size(None) is None
-    assert preprocess.process_shape((20, 30), 15) == (10, 15)
-    assert callable(preprocess.solver_gray)
-    assert callable(preprocess.resize_2d)
+    assert preprocess.solver_shape((20, 30), 15) == (10, 15)
+    assert callable(preprocess.prepare_solver_gray)
+    assert callable(preprocess.resize_lanczos)
     assert callable(preprocess.rgb_to_luma)
+    assert "def process_shape(" not in source
+    assert "def solver_gray(" not in source
+    assert "def resize_2d(" not in source
+    assert "mode:" not in source
+    assert "unsupported resize mode" not in source
 
 
 def test_source_files_do_not_use_future_imports() -> None:

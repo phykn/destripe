@@ -6,7 +6,12 @@ import torch
 
 from .adaptive import estimate_adaptive_params, estimate_tile_mus
 from .core import UniversalStripeRemover
-from .preprocess import resize_2d, rgb_to_luma, solver_gray, validate_process_size
+from .preprocess import (
+    prepare_solver_gray,
+    resize_lanczos,
+    rgb_to_luma,
+    validate_process_size,
+)
 
 
 def destripe(
@@ -163,7 +168,7 @@ def _destripe_grayscale(
     verbose: bool,
     process_size: int | None,
 ) -> np.ndarray:
-    processed_gray = solver_gray(gray=gray, process_size=process_size)
+    processed_gray = prepare_solver_gray(gray=gray, process_size=process_size)
     remover = _make_remover(
         gray=processed_gray,
         adaptive=adaptive,
@@ -195,7 +200,7 @@ def _destripe_grayscale(
         return solver_clean
 
     stripe = processed_gray - solver_clean
-    full_stripe = resize_2d(stripe, size=gray.shape, mode="lanczos")
+    full_stripe = resize_lanczos(stripe, shape=gray.shape)
     clean = gray - full_stripe
     if proj:
         clean = np.clip(clean, 0.0, 1.0)

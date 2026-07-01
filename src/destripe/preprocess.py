@@ -28,14 +28,14 @@ def validate_process_size(process_size: int | None) -> int | None:
     return value
 
 
-def solver_gray(*, gray: np.ndarray, process_size: int | None) -> np.ndarray:
-    size = process_shape(gray.shape, process_size)
-    if size == gray.shape:
+def prepare_solver_gray(*, gray: np.ndarray, process_size: int | None) -> np.ndarray:
+    shape = solver_shape(gray.shape, process_size)
+    if shape == gray.shape:
         return gray
-    return np.clip(resize_2d(gray, size=size, mode="lanczos"), 0.0, 1.0)
+    return np.clip(resize_lanczos(gray, shape=shape), 0.0, 1.0)
 
 
-def process_shape(
+def solver_shape(
     shape: tuple[int, int], process_size: int | None
 ) -> tuple[int, int]:
     if process_size is None:
@@ -50,25 +50,21 @@ def process_shape(
     return _scaled_dim(h, scale), process_size
 
 
-def resize_2d(
+def resize_lanczos(
     image: np.ndarray,
     *,
-    size: tuple[int, int],
-    mode: str,
+    shape: tuple[int, int],
 ) -> np.ndarray:
-    if image.shape == size:
+    if image.shape == shape:
         return np.asarray(image, dtype=np.float64).copy()
-
-    if mode != "lanczos":
-        raise ValueError(f"unsupported resize mode: {mode}")
 
     array = np.asarray(image, dtype=np.float64)
     resized = cv2.resize(
         array,
-        dsize=(size[1], size[0]),
+        dsize=(shape[1], shape[0]),
         interpolation=cv2.INTER_LANCZOS4,
     )
-    return np.asarray(resized, dtype=np.float64).reshape(size)
+    return np.asarray(resized, dtype=np.float64).reshape(shape)
 
 
 def _scaled_dim(dim: int, scale: float) -> int:

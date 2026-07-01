@@ -604,9 +604,9 @@ class TestDestripe:
         assert result.shape == img.shape
         assert np.allclose(result, img)
 
-    def test_resize_2d_supports_lanczos_mode(self) -> None:
+    def test_resize_lanczos_resizes_2d_images(self) -> None:
         img = np.random.default_rng(23).random((11, 13))
-        result = preprocess.resize_2d(img, size=(7, 9), mode="lanczos")
+        result = preprocess.resize_lanczos(img, shape=(7, 9))
 
         assert result.shape == (7, 9)
         assert result.dtype == np.float64
