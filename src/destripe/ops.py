@@ -4,6 +4,7 @@ import warnings
 import numpy as np
 import torch
 
+from .adaptive import estimate_adaptive_params
 from .core import UniversalStripeRemover
 
 # Rec. 601 luma coefficients (standard for NTSC/JPEG grayscale conversion)
@@ -45,9 +46,7 @@ def destripe(
         proj: Whether to project the clean component onto ``[0, 1]``.
         device: Computation device for the underlying torch solver.
         verbose: Whether to print iteration progress.
-        adaptive: Whether to use adaptive parameter estimation. Until adaptive
-            estimation is implemented, this uses manual defaults and all
-            directions.
+        adaptive: Whether to use adaptive parameter estimation.
         directions: Stripe direction modes to use. ``None`` uses all modes.
             Ignored when ``adaptive`` is true.
 
@@ -89,14 +88,15 @@ def destripe(
         return input_array.copy()
     normalized = (normalized - min_value) / scale
 
-    remover = UniversalStripeRemover(
-        mu1=effective_mu1,
-        mu2=effective_mu2,
-        device=device,
-        directions=effective_directions,
-    )
-
     if normalized.ndim == 2:
+        remover = _make_remover(
+            gray=normalized,
+            adaptive=adaptive,
+            mu1=effective_mu1,
+            mu2=effective_mu2,
+            directions=effective_directions,
+            device=device,
+        )
         clean = _run_grayscale(
             remover=remover,
             gray=normalized,
@@ -117,6 +117,14 @@ def destripe(
         else:
             gray = normalized[..., 0]
 
+        remover = _make_remover(
+            gray=gray,
+            adaptive=adaptive,
+            mu1=effective_mu1,
+            mu2=effective_mu2,
+            directions=effective_directions,
+            device=device,
+        )
         clean_gray = _run_grayscale(
             remover=remover,
             gray=gray,
@@ -144,6 +152,31 @@ def destripe(
         result = np.clip(result, info.min, info.max)
 
     return result.astype(orig_dtype)
+
+
+def _make_remover(
+    *,
+    gray: np.ndarray,
+    adaptive: bool,
+    mu1: float,
+    mu2: float,
+    directions: Sequence[int] | None,
+    device: torch.device | str | None,
+) -> UniversalStripeRemover:
+    if adaptive:
+        params = estimate_adaptive_params(gray)
+        return UniversalStripeRemover(
+            mu1=params.mu1,
+            mu2=params.mu2,
+            device=device,
+            directions=params.directions,
+        )
+    return UniversalStripeRemover(
+        mu1=mu1,
+        mu2=mu2,
+        device=device,
+        directions=directions,
+    )
 
 
 def _run_grayscale(

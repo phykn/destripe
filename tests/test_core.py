@@ -269,6 +269,49 @@ class TestDestripe:
         assert result.shape == gray_image.shape
         assert result.dtype == gray_image.dtype
 
+    def test_adaptive_uses_estimated_parameters(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from destripe import ops
+        from destripe.adaptive import AdaptiveParams
+
+        calls = {}
+
+        def fake_estimate(
+            gray: np.ndarray, *, fixed_directions=None
+        ) -> AdaptiveParams:
+            calls["shape"] = gray.shape
+            calls["fixed_directions"] = fixed_directions
+            return AdaptiveParams(
+                directions=(0,), mu1=0.10, mu2=0.0017, confidence=1.0
+            )
+
+        monkeypatch.setattr(
+            ops, "estimate_adaptive_params", fake_estimate, raising=False
+        )
+        img = np.random.default_rng(17).random((24, 24))
+        result = destripe(img, adaptive=True, iterations=5)
+
+        assert result.shape == img.shape
+        assert calls == {"shape": img.shape, "fixed_directions": None}
+
+    def test_adaptive_grayscale_float64(self, gray_image: np.ndarray) -> None:
+        result = destripe(gray_image, adaptive=True, iterations=10)
+        assert result.shape == gray_image.shape
+        assert result.dtype == gray_image.dtype
+
+    def test_adaptive_rgb(self) -> None:
+        img = np.random.default_rng(15).random((32, 32, 3)).astype(np.float32)
+        result = destripe(img, adaptive=True, iterations=10)
+        assert result.shape == img.shape
+        assert result.dtype == img.dtype
+
+    def test_adaptive_constant_returns_copy(self) -> None:
+        img = np.full((16, 16), 12, dtype=np.uint8)
+        result = destripe(img, adaptive=True)
+        assert np.array_equal(result, img)
+        assert result is not img
+
     def test_grayscale_uint8(self) -> None:
         img = (np.random.default_rng(1).random((32, 32)) * 255).astype(np.uint8)
         result = destripe(img, iterations=20)
@@ -365,7 +408,20 @@ class TestDestripe:
     def test_adaptive_ignores_manual_arguments_for_remover(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        from destripe.adaptive import AdaptiveParams
+
         calls: list[dict[str, object]] = []
+        estimate_calls: list[dict[str, object]] = []
+
+        def fake_estimate(
+            gray: np.ndarray, *, fixed_directions=None
+        ) -> AdaptiveParams:
+            estimate_calls.append(
+                {"shape": gray.shape, "fixed_directions": fixed_directions}
+            )
+            return AdaptiveParams(
+                directions=(0,), mu1=0.10, mu2=0.0017, confidence=1.0
+            )
 
         class FakeRemover:
             def __init__(
@@ -388,6 +444,7 @@ class TestDestripe:
                 return torch.as_tensor(image)
 
         monkeypatch.setattr(destripe_ops, "UniversalStripeRemover", FakeRemover)
+        monkeypatch.setattr(destripe_ops, "estimate_adaptive_params", fake_estimate)
 
         img = np.random.default_rng(15).random((8, 8))
         with pytest.warns(UserWarning, match="adaptive=True ignores"):
@@ -403,12 +460,13 @@ class TestDestripe:
         assert result.shape == img.shape
         assert calls == [
             {
-                "mu1": 0.33,
-                "mu2": 0.003,
+                "mu1": 0.10,
+                "mu2": 0.0017,
                 "device": None,
-                "directions": None,
+                "directions": (0,),
             }
         ]
+        assert estimate_calls == [{"shape": img.shape, "fixed_directions": None}]
 
     def test_constant_returns_copy(self) -> None:
         img = np.full((32, 32), 128, dtype=np.uint8)
