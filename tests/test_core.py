@@ -269,6 +269,8 @@ class TestAdaptiveEstimator:
         img[:, 32] = 0.8
         params = estimate_adaptive_params(img)
         assert params.directions[0] == 0
+        assert params.mu1 >= 0.33
+        assert params.mu2 >= 0.003 - 1e-12
         assert 0.10 <= params.mu1 <= 0.50
         assert 0.0017 <= params.mu2 <= 0.017
 
@@ -303,7 +305,7 @@ class TestAdaptiveEstimator:
 
         assert single.directions == (0,)
         assert multiple.directions == (0, 1)
-        assert single.mu2 == pytest.approx(0.0017)
+        assert single.mu2 >= 0.003 - 1e-12
         assert multiple.mu2 > single.mu2
 
     @pytest.mark.parametrize("shape", [(1, 1), (3, 8), (8, 3)])

@@ -31,6 +31,7 @@ _MU1_MAX = 0.50
 _MU2_MIN = 0.0017
 _MU2_ANCHOR = 0.003
 _MU2_MAX = 0.017
+_STRENGTH_ANCHOR_SCORE = 1.9
 _EPS = 1e-9
 
 
@@ -67,8 +68,9 @@ def estimate_adaptive_params(
     second_score = selected_ranked[1] if len(selected_ranked) > 1 else 0.0
     ambiguity = _ambiguity_score(selected_scores=selected_scores)
 
-    mu1 = _estimate_mu1(top_score)
-    mu2 = _estimate_mu2(ambiguity)
+    strength = _stripe_strength(top_score)
+    mu1 = _estimate_mu1(strength)
+    mu2 = _estimate_mu2(strength=strength, ambiguity=ambiguity)
     confidence = _confidence(
         top_score=top_score,
         second_score=second_score,
@@ -210,17 +212,22 @@ def _select_directions(scores: dict[int, float]) -> tuple[int, ...]:
     return tuple(directions)
 
 
-def _estimate_mu1(score: float) -> float:
-    strength = min(1.0, max(0.0, (score - 1.0) / 3.0))
+def _stripe_strength(score: float) -> float:
+    anchor_span = _STRENGTH_ANCHOR_SCORE - 1.0
+    return min(1.0, max(0.0, (score - 1.0) / (2.0 * anchor_span)))
+
+
+def _estimate_mu1(strength: float) -> float:
     if strength <= 0.5:
         return _log_interp(_MU1_MIN, _MU1_ANCHOR, strength / 0.5)
     return _log_interp(_MU1_ANCHOR, _MU1_MAX, (strength - 0.5) / 0.5)
 
 
-def _estimate_mu2(ambiguity: float) -> float:
+def _estimate_mu2(*, strength: float, ambiguity: float) -> float:
+    base = _log_interp(_MU2_MIN, _MU2_ANCHOR, min(1.0, strength / 0.5))
     if ambiguity <= 0.5:
-        return _log_interp(_MU2_MIN, _MU2_ANCHOR, ambiguity / 0.5)
-    return _log_interp(_MU2_ANCHOR, _MU2_MAX, (ambiguity - 0.5) / 0.5)
+        return base
+    return _log_interp(base, _MU2_MAX, (ambiguity - 0.5) / 0.5)
 
 
 def _ambiguity_score(*, selected_scores: list[float]) -> float:
