@@ -532,6 +532,90 @@ class TestDestripe:
         assert result.shape == img.shape
         assert result.dtype == img.dtype
 
+    def test_process_scale_runs_solver_on_scaled_grayscale(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        calls = []
+
+        class FakeRemover:
+            def __init__(self, **_: object) -> None:
+                pass
+
+            def process_tiled(self, image: np.ndarray, **_: object) -> torch.Tensor:
+                calls.append(image.shape)
+                return torch.as_tensor(image - 0.25)
+
+        monkeypatch.setattr(destripe_ops, "UniversalStripeRemover", FakeRemover)
+
+        img = np.linspace(0.0, 1.0, 16 * 20, dtype=np.float64).reshape(16, 20)
+        result = destripe(img, process_scale=0.5, iterations=1, proj=False)
+
+        assert calls == [(8, 10)]
+        assert result.shape == img.shape
+        assert np.allclose(result, img - 0.25)
+
+    def test_process_scale_subtracts_scaled_rgb_stripe(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        class FakeRemover:
+            def __init__(self, **_: object) -> None:
+                pass
+
+            def process_tiled(self, image: np.ndarray, **_: object) -> torch.Tensor:
+                return torch.as_tensor(image - 0.125)
+
+        monkeypatch.setattr(destripe_ops, "UniversalStripeRemover", FakeRemover)
+
+        img = np.linspace(0.0, 1.0, 12 * 18 * 3, dtype=np.float64).reshape(12, 18, 3)
+        result = destripe(img, process_scale=0.5, iterations=1, proj=False)
+
+        assert result.shape == img.shape
+        assert np.allclose(result, img - 0.125)
+
+    def test_adaptive_process_scale_estimates_scaled_gray(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from destripe.adaptive import AdaptiveParams
+
+        calls = []
+
+        def fake_estimate(
+            gray: np.ndarray, *, fixed_directions=None
+        ) -> AdaptiveParams:
+            calls.append((gray.shape, fixed_directions))
+            return AdaptiveParams(
+                directions=(0,), mu1=0.33, mu2=0.003, confidence=1.0
+            )
+
+        class FakeRemover:
+            directions = (0,)
+
+            def __init__(self, **_: object) -> None:
+                pass
+
+            def process_tiled(self, image: np.ndarray, **_: object) -> torch.Tensor:
+                return torch.as_tensor(image)
+
+        monkeypatch.setattr(destripe_ops, "estimate_adaptive_params", fake_estimate)
+        monkeypatch.setattr(destripe_ops, "UniversalStripeRemover", FakeRemover)
+
+        img = np.random.default_rng(20).random((20, 30))
+        result = destripe(img, adaptive=True, process_scale=0.5, iterations=1)
+
+        assert result.shape == img.shape
+        assert calls == [((10, 15), None)]
+
+    @pytest.mark.parametrize("process_scale", [0, -0.1, 1.1, float("nan"), True])
+    def test_invalid_process_scale(self, process_scale: object) -> None:
+        with pytest.raises(ValueError, match="process_scale"):
+            destripe(
+                np.random.default_rng(21).random((8, 8)),
+                process_scale=process_scale,  # type: ignore[arg-type]
+            )
+
     @pytest.mark.parametrize("shape", [(1, 8), (3, 8)])
     def test_adaptive_tiled_tiny_images_return_shape_dtype(
         self, shape: tuple[int, int]
