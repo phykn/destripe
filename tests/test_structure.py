@@ -144,11 +144,42 @@ def test_ops_module_keeps_flow_direct_and_docstring_concise() -> None:
     assert "Returns:\n        Destriped image with the same shape and dtype." in source
 
 
-def test_core_module_does_not_use_section_marker_comments() -> None:
+def test_core_is_package_with_remover_and_operators() -> None:
     root = Path(__file__).resolve().parents[1] / "src" / "destripe"
-    source = (root / "core.py").read_text(encoding="utf-8")
+    core_root = root / "core"
+    remover_source = (core_root / "remover.py").read_text(encoding="utf-8")
+    operator_source = (core_root / "operators.py").read_text(encoding="utf-8")
 
-    assert "# ---" not in source
+    assert core_root.is_dir()
+    assert (core_root / "__init__.py").exists()
+    assert (core_root / "remover.py").exists()
+    assert (core_root / "operators.py").exists()
+    assert not (root / "core.py").exists()
+    assert "class UniversalStripeRemover" in remover_source
+    assert "def forward_diff(" in operator_source
+    assert "def dir_diff(" in operator_source
+    assert "def adjoint_1d(" in operator_source
+    assert "def adjoint_grad(" in operator_source
+    assert "def adjoint_dir(" in operator_source
+    assert "scale:" in operator_source
+    assert "def _forward_diff(" not in remover_source
+    assert "def _dir_diff(" not in remover_source
+    assert "def _adjoint_" not in remover_source
+    assert "def _process_single_tile(" not in remover_source
+    assert "original_mu1" not in remover_source
+    assert "original_mu2" not in remover_source
+    assert "On CUDA" not in remover_source
+
+
+def test_core_package_does_not_use_section_marker_comments() -> None:
+    root = Path(__file__).resolve().parents[1] / "src" / "destripe" / "core"
+    offenders = [
+        path.relative_to(root)
+        for path in root.rglob("*.py")
+        if "# ---" in path.read_text(encoding="utf-8")
+    ]
+
+    assert offenders == []
 
 
 def test_source_files_do_not_use_future_imports() -> None:

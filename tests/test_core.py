@@ -6,6 +6,7 @@ import destripe.ops as destripe_ops
 from destripe import preprocess
 from destripe import UniversalStripeRemover, destripe
 from destripe.adaptive import estimate_adaptive_params
+from destripe.core import operators
 
 
 @pytest.fixture()
@@ -29,39 +30,39 @@ class TestAdjointConsistency:
 
     SHAPE = (1, 16, 16)
 
-    def test_forward_diff_adjoint_dim1(self, remover: UniversalStripeRemover) -> None:
-        self._check_gradient_adjoint(remover, dim=1)
+    def test_forward_diff_adjoint_dim1(self) -> None:
+        self._check_gradient_adjoint(dim=1)
 
-    def test_forward_diff_adjoint_dim2(self, remover: UniversalStripeRemover) -> None:
-        self._check_gradient_adjoint(remover, dim=2)
+    def test_forward_diff_adjoint_dim2(self) -> None:
+        self._check_gradient_adjoint(dim=2)
 
     @pytest.mark.parametrize("mode", range(5))
-    def test_dir_diff_adjoint(self, remover: UniversalStripeRemover, mode: int) -> None:
+    def test_dir_diff_adjoint(self, mode: int) -> None:
         torch.manual_seed(mode)
         x = torch.randn(self.SHAPE)
         y = torch.randn(self.SHAPE)
 
         out = torch.empty_like(x)
-        remover._dir_diff(x=x, mode=mode, out=out)
+        operators.dir_diff(x=x, mode=mode, out=out)
         lhs = (out * y).sum().item()
 
         target = torch.zeros_like(x)
-        remover._adjoint_dir(target=target, q=y, mode=mode, a=1.0)
+        operators.adjoint_dir(target=target, q=y, mode=mode, scale=1.0)
         rhs = (x * target).sum().item()
 
         assert lhs == pytest.approx(-rhs, abs=1e-5)
 
-    def _check_gradient_adjoint(self, remover: UniversalStripeRemover, dim: int) -> None:
+    def _check_gradient_adjoint(self, dim: int) -> None:
         torch.manual_seed(dim)
         x = torch.randn(self.SHAPE)
         y = torch.randn(self.SHAPE)
 
         fwd = torch.empty_like(x)
-        remover._forward_diff(x=x, dim=dim, out=fwd)
+        operators.forward_diff(x=x, dim=dim, out=fwd)
         lhs = (fwd * y).sum().item()
 
         target = torch.zeros_like(x)
-        remover._adjoint_1d(target=target, p=y, dim=dim, a=1.0)
+        operators.adjoint_1d(target=target, p=y, dim=dim, scale=1.0)
         rhs = (x * target).sum().item()
 
         assert lhs == pytest.approx(-rhs, abs=1e-5)

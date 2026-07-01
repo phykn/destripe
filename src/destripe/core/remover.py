@@ -6,26 +6,15 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from . import operators
 
-_NUM_DIRS = 5  # Vertical + 4 diagonal directions
+
+_NUM_DIRS = 5
 _ALL_DIRECTIONS = tuple(range(_NUM_DIRS))
 
 
 class UniversalStripeRemover:
-    """Remove stripe noise from grayscale images with a PDHG solver.
-
-    The model decomposes input data into a clean component ``u`` and directional
-    stripe components ``s_i`` such that ``u + sum(s_i) = data``. By default all
-    five stripe directions are active; pass ``directions`` to use a subset.
-
-    Args:
-        mu1: TV regularization weight for the clean image.
-        mu2: L2 penalty weight for stripe components.
-        device: Computation device. If ``None``, CUDA is used when available,
-            otherwise CPU.
-        directions: Optional sequence of active direction modes. Modes must be
-            unique integers in ``0..4``. If ``None``, all modes are used.
-    """
+    """Remove stripe noise from grayscale images with a PDHG solver."""
 
     def __init__(
         self,
@@ -51,34 +40,17 @@ class UniversalStripeRemover:
         proj: bool = True,
         verbose: bool = False,
     ) -> torch.Tensor:
-        """Destripe a grayscale image or a batch of grayscale images.
-
-        Uses the active stripe ``directions`` configured on this remover.
+        """Destripe a grayscale image or batch.
 
         Args:
             image: Input tensor/array with shape ``(H, W)`` or ``(N, H, W)``.
-            iterations: Maximum number of PDHG iterations. Must be positive.
-            tol: Relative convergence tolerance. Must be non-negative.
+            iterations: Maximum number of PDHG iterations.
+            tol: Relative convergence tolerance.
             proj: Whether to project the clean component onto ``[0, 1]``.
             verbose: Whether to print iteration progress.
 
         Returns:
-            A tensor with the same rank as ``image`` containing the clean
-            component estimate. Floating-point input dtypes are preserved
-            (fp32 in / fp32 out, fp64 in / fp64 out); integer inputs are
-            promoted to fp32.
-
-        Raises:
-            ValueError: If ``image`` rank is unsupported, contains non-finite
-                values, or if ``iterations``/``tol`` are invalid.
-
-        Note:
-            The convergence check at iteration ``20k`` (``k >= 1``) compares
-            ``u`` against its snapshot from iteration ``20(k-1)``. On CUDA,
-            reductions used by the convergence norm are not bit-deterministic
-            across runs by default; iteration count and outputs may differ
-            for identical inputs unless ``torch.use_deterministic_algorithms``
-            is enabled globally.
+            Clean estimate with the same rank as ``image``.
         """
         self._validate_solver_params(iterations=iterations, tol=tol)
 
@@ -116,23 +88,16 @@ class UniversalStripeRemover:
 
         Args:
             image: Input tensor/array with shape ``(H, W)`` or ``(1, H, W)``.
-            tiles: Number of tiles per image side. Must be positive.
-            iterations: Maximum number of PDHG iterations per tile. Must be
-                positive.
-            tol: Relative convergence tolerance. Must be non-negative.
-            overlap: Overlap width (in pixels) before cosine blending. Must be
-                non-negative.
+            tiles: Number of tiles per image side.
+            iterations: Maximum number of PDHG iterations per tile.
+            tol: Relative convergence tolerance.
+            overlap: Overlap width in pixels before cosine blending.
             proj: Whether to project the clean component onto ``[0, 1]``.
             verbose: Whether to print iteration progress.
-            tile_mus: Optional ``(mu1, mu2)`` values for each tile in row-major
-                order. When omitted, tiles use the existing batch path.
+            tile_mus: Optional ``(mu1, mu2)`` values in row-major tile order.
 
         Returns:
             A tensor with shape ``(H, W)``.
-
-        Raises:
-            ValueError: If ``image`` shape is unsupported, contains non-finite
-                values, or if solver/tile parameters are invalid.
         """
         self._validate_solver_params(iterations=iterations, tol=tol)
         self._validate_tiling_params(tiles=tiles, overlap=overlap)
@@ -159,16 +124,25 @@ class UniversalStripeRemover:
             return image_2d.clone()
 
         if tiles <= 1:
-            return self._process_single_tile(
-                image=image_2d,
+            if validated_tile_mus is None:
+                return self.process(
+                    image=image_2d,
+                    iterations=iterations,
+                    tol=tol,
+                    proj=proj,
+                    verbose=verbose,
+                )
+
+            tile_mu1, tile_mu2 = validated_tile_mus[0]
+            return self._solve(
+                data=image_2d.unsqueeze(0),
                 iterations=iterations,
                 tol=tol,
                 proj=proj,
                 verbose=verbose,
-                tile_mu=validated_tile_mus[0]
-                if validated_tile_mus is not None
-                else None,
-            )
+                mu1=tile_mu1,
+                mu2=tile_mu2,
+            ).squeeze(0)
 
         pad_bottom = (tiles - orig_h % tiles) % tiles
         pad_right = (tiles - orig_w % tiles) % tiles
@@ -265,39 +239,6 @@ class UniversalStripeRemover:
             overlap_pixels : overlap_pixels + padded_w,
         ][:orig_h, :orig_w]
 
-    def _process_single_tile(
-        self,
-        *,
-        image: torch.Tensor,
-        iterations: int,
-        tol: float,
-        proj: bool,
-        verbose: bool,
-        tile_mu: tuple[float, float] | None,
-    ) -> torch.Tensor:
-        if tile_mu is None:
-            return self.process(
-                image=image,
-                iterations=iterations,
-                tol=tol,
-                proj=proj,
-                verbose=verbose,
-            )
-
-        original_mu1, original_mu2 = self.mu1, self.mu2
-        try:
-            self.mu1 = float(tile_mu[0])
-            self.mu2 = float(tile_mu[1])
-            return self.process(
-                image=image,
-                iterations=iterations,
-                tol=tol,
-                proj=proj,
-                verbose=verbose,
-            )
-        finally:
-            self.mu1, self.mu2 = original_mu1, original_mu2
-
     @staticmethod
     def _tile_mu_tensors(
         tile_mus: Sequence[tuple[float, float]],
@@ -348,8 +289,8 @@ class UniversalStripeRemover:
         tol: float,
         proj: bool,
         verbose: bool,
-        mu1: torch.Tensor | None = None,
-        mu2: torch.Tensor | None = None,
+        mu1: torch.Tensor | float | None = None,
+        mu2: torch.Tensor | float | None = None,
     ) -> torch.Tensor:
         if data.is_floating_point():
             data = data.to(device=self.device)
@@ -391,19 +332,19 @@ class UniversalStripeRemover:
                 if verbose:
                     print(f"\rIteration: {iteration_idx + 1} / {iterations}", end="")
 
-                self._adjoint_grad(
+                operators.adjoint_grad(
                     target=clean,
                     p_h=grad_row_bar,
                     p_v=grad_col_bar,
-                    a=step_size,
+                    scale=step_size,
                 )
 
                 for component_idx, mode in enumerate(self.directions):
-                    self._adjoint_dir(
+                    operators.adjoint_dir(
                         target=stripe_components[component_idx],
                         q=dir_dual_bar[component_idx],
                         mode=mode,
-                        a=step_size,
+                        scale=step_size,
                     )
                     stripe_components[component_idx].sub_(
                         l2_dual_bar[component_idx], alpha=step_size
@@ -431,9 +372,9 @@ class UniversalStripeRemover:
                 grad_row_bar.copy_(grad_row)
                 grad_col_bar.copy_(grad_col)
 
-                self._forward_diff(x=clean, dim=1, out=scratch)
+                operators.forward_diff(x=clean, dim=1, out=scratch)
                 grad_row.add_(scratch)
-                self._forward_diff(x=clean, dim=2, out=scratch)
+                operators.forward_diff(x=clean, dim=2, out=scratch)
                 grad_col.add_(scratch)
 
                 torch.mul(grad_row, grad_row, out=grad_norm)
@@ -449,7 +390,7 @@ class UniversalStripeRemover:
 
                 for component_idx, mode in enumerate(self.directions):
                     dir_dual_bar[component_idx].copy_(dir_dual[component_idx])
-                    self._dir_diff(
+                    operators.dir_diff(
                         x=stripe_components[component_idx],
                         mode=mode,
                         out=directional_diff,
@@ -496,7 +437,7 @@ class UniversalStripeRemover:
     @staticmethod
     def _solver_mu_tensor(
         *,
-        value: torch.Tensor | None,
+        value: torch.Tensor | float | None,
         fallback: float,
         ref: torch.Tensor,
     ) -> torch.Tensor:
@@ -555,99 +496,6 @@ class UniversalStripeRemover:
     def _validate_finite_tensor(name: str, x: torch.Tensor) -> None:
         if not torch.isfinite(x).all():
             raise ValueError(f"{name} must not contain NaN or Inf values.")
-
-    @staticmethod
-    def _forward_diff(
-        x: torch.Tensor,
-        dim: int,
-        out: torch.Tensor,
-    ) -> None:
-        """Forward difference with Neumann BC (last element = 0)."""
-        n = x.size(dim)
-        torch.sub(
-            x.narrow(dim=dim, start=1, length=n - 1),
-            x.narrow(dim=dim, start=0, length=n - 1),
-            out=out.narrow(dim=dim, start=0, length=n - 1),
-        )
-        out.narrow(dim=dim, start=n - 1, length=1).zero_()
-
-    @staticmethod
-    def _dir_diff(
-        x: torch.Tensor,
-        mode: int,
-        out: torch.Tensor,
-    ) -> None:
-        """Directional difference operator for the given mode."""
-        out.zero_()
-        if mode == 0:
-            out[:, :-1, :] = x[:, 1:, :] - x[:, :-1, :]
-        elif mode == 1:
-            out[:, :-2, :-1] = x[:, 2:, 1:] - x[:, :-2, :-1]
-        elif mode == 2:
-            out[:, :-1, :-1] = x[:, 1:, 1:] - x[:, :-1, :-1]
-        elif mode == 3:
-            out[:, :-2, 1:] = x[:, 2:, :-1] - x[:, :-2, 1:]
-        elif mode == 4:
-            out[:, :-1, 1:] = x[:, 1:, :-1] - x[:, :-1, 1:]
-
-    @staticmethod
-    def _adjoint_1d(
-        target: torch.Tensor,
-        p: torch.Tensor,
-        dim: int,
-        a: float,
-    ) -> None:
-        """Adjoint of 1D forward difference: adds -div(p)*a to target."""
-        idx = [slice(None)] * 3
-
-        idx[dim] = 0
-        target[tuple(idx)].add_(p[tuple(idx)], alpha=a)
-
-        idx[dim] = slice(1, -1)
-        idx2 = list(idx)
-        idx2[dim] = slice(None, -2)
-        target[tuple(idx)].sub_(p[tuple(idx2)], alpha=a).add_(p[tuple(idx)], alpha=a)
-
-        idx[dim] = -1
-        idx2 = list(idx)
-        idx2[dim] = -2
-        target[tuple(idx)].sub_(p[tuple(idx2)], alpha=a)
-
-    @classmethod
-    def _adjoint_grad(
-        cls,
-        target: torch.Tensor,
-        p_h: torch.Tensor,
-        p_v: torch.Tensor,
-        a: float,
-    ) -> None:
-        """Adjoint of 2D gradient operator."""
-        cls._adjoint_1d(target=target, p=p_h, dim=1, a=a)
-        cls._adjoint_1d(target=target, p=p_v, dim=2, a=a)
-
-    @staticmethod
-    def _adjoint_dir(
-        target: torch.Tensor,
-        q: torch.Tensor,
-        mode: int,
-        a: float,
-    ) -> None:
-        """Adjoint of directional difference operator."""
-        if mode == 0:
-            target[:, 1:, :].sub_(q[:, :-1, :], alpha=a)
-            target[:, :-1, :].add_(q[:, :-1, :], alpha=a)
-        elif mode == 1:
-            target[:, 2:, 1:].sub_(q[:, :-2, :-1], alpha=a)
-            target[:, :-2, :-1].add_(q[:, :-2, :-1], alpha=a)
-        elif mode == 2:
-            target[:, 1:, 1:].sub_(q[:, :-1, :-1], alpha=a)
-            target[:, :-1, :-1].add_(q[:, :-1, :-1], alpha=a)
-        elif mode == 3:
-            target[:, 2:, :-1].sub_(q[:, :-2, 1:], alpha=a)
-            target[:, :-2, 1:].add_(q[:, :-2, 1:], alpha=a)
-        elif mode == 4:
-            target[:, 1:, :-1].sub_(q[:, :-1, 1:], alpha=a)
-            target[:, :-1, 1:].add_(q[:, :-1, 1:], alpha=a)
 
     @staticmethod
     def _to_tensor(
