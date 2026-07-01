@@ -3,7 +3,7 @@ import pytest
 import torch
 
 import destripe.ops as destripe_ops
-from destripe import image_ops
+from destripe import preprocess
 from destripe import UniversalStripeRemover, destripe
 from destripe.adaptive import estimate_adaptive_params
 
@@ -606,7 +606,7 @@ class TestDestripe:
 
     def test_resize_2d_supports_lanczos_mode(self) -> None:
         img = np.random.default_rng(23).random((11, 13))
-        result = image_ops.resize_2d(img, size=(7, 9), mode="lanczos")
+        result = preprocess.resize_2d(img, size=(7, 9), mode="lanczos")
 
         assert result.shape == (7, 9)
         assert result.dtype == np.float64

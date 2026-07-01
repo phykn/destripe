@@ -6,7 +6,7 @@ import torch
 
 from .adaptive import estimate_adaptive_params, estimate_tile_mus
 from .core import UniversalStripeRemover
-from .image_ops import resize_2d, rgb_to_luma, solver_gray, validate_process_size
+from .preprocess import resize_2d, rgb_to_luma, solver_gray, validate_process_size
 
 
 def destripe(

@@ -1,5 +1,3 @@
-"""Image preprocessing helpers for the public destripe operation."""
-
 import numbers
 
 import cv2

@@ -110,14 +110,18 @@ def test_adaptive_preprocess_validates_shape_before_tensor_conversion() -> None:
     assert 'raise ValueError("gray must have shape (H, W).")' in preprocess_source
 
 
-def test_image_ops_module_exposes_process_size_helpers() -> None:
-    from destripe import image_ops
+def test_preprocess_module_exposes_image_preprocess_helpers() -> None:
+    from destripe import preprocess
 
-    assert image_ops.validate_process_size(None) is None
-    assert image_ops.process_shape((20, 30), 15) == (10, 15)
-    assert callable(image_ops.solver_gray)
-    assert callable(image_ops.resize_2d)
-    assert callable(image_ops.rgb_to_luma)
+    root = Path(__file__).resolve().parents[1] / "src" / "destripe"
+
+    assert (root / "preprocess.py").exists()
+    assert not (root / "image_ops.py").exists()
+    assert preprocess.validate_process_size(None) is None
+    assert preprocess.process_shape((20, 30), 15) == (10, 15)
+    assert callable(preprocess.solver_gray)
+    assert callable(preprocess.resize_2d)
+    assert callable(preprocess.rgb_to_luma)
 
 
 def test_source_files_do_not_use_future_imports() -> None:
