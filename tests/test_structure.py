@@ -150,13 +150,16 @@ def test_preprocess_module_exposes_image_preprocess_helpers() -> None:
     assert preprocess.validate_process_size(None) is None
     assert preprocess.compute_solver_shape((20, 30), 15) == (10, 15)
     assert callable(preprocess.prepare_solver_gray)
-    assert callable(preprocess.resize_lanczos)
+    assert callable(preprocess.resize_to_shape)
     assert callable(preprocess.rgb_to_luma)
     assert "def process_shape(" not in source
     assert "def solver_gray(" not in source
     assert "def solver_shape(" not in source
     assert "def _scaled_dim(" not in source
     assert "def _scale_dim(" in source
+    assert "def resize_lanczos(" not in source
+    assert "INTER_LANCZOS4" not in source
+    assert "INTER_CUBIC" in source
     assert "def resize_2d(" not in source
     assert "mode:" not in source
     assert "unsupported resize mode" not in source

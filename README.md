@@ -63,10 +63,10 @@ separate solver run per tile.
 
 ## Coarse Processing
 Use `process_size` when the stripe field is broad enough to estimate at a lower
-resolution. The solver resizes the luminance/grayscale image so its long edge
-matches `process_size`, preserves aspect ratio, then only upsamples the
-estimated stripe component and subtracts it from the original-resolution input.
-`process_size=None` keeps the original resolution.
+resolution. The solver resizes the luminance/grayscale image with OpenCV cubic
+interpolation so its long edge matches `process_size`, preserves aspect ratio,
+then only upsamples the estimated stripe component and subtracts it from the
+original-resolution input. `process_size=None` keeps the original resolution.
 
 ```python
 clean = destripe(

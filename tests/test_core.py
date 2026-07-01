@@ -605,13 +605,40 @@ class TestDestripe:
         assert result.shape == img.shape
         assert np.allclose(result, img)
 
-    def test_resize_lanczos_resizes_2d_images(self) -> None:
+    def test_resize_to_shape_resizes_2d_images(self) -> None:
         img = np.random.default_rng(23).random((11, 13))
-        result = preprocess.resize_lanczos(img, shape=(7, 9))
+        result = preprocess.resize_to_shape(img, shape=(7, 9))
 
         assert result.shape == (7, 9)
         assert result.dtype == np.float64
         assert np.isfinite(result).all()
+
+    def test_resize_to_shape_uses_cubic_interpolation(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        calls = []
+
+        def fake_resize(
+            array: np.ndarray,
+            *,
+            dsize: tuple[int, int],
+            interpolation: int,
+        ) -> np.ndarray:
+            calls.append({"dsize": dsize, "interpolation": interpolation})
+            return np.zeros((dsize[1], dsize[0]), dtype=np.float64)
+
+        monkeypatch.setattr(preprocess.cv2, "resize", fake_resize)
+
+        result = preprocess.resize_to_shape(
+            np.random.default_rng(25).random((11, 13)),
+            shape=(7, 9),
+        )
+
+        assert result.shape == (7, 9)
+        assert calls == [
+            {"dsize": (9, 7), "interpolation": preprocess.cv2.INTER_CUBIC}
+        ]
 
     def test_process_size_subtracts_resized_rgb_stripe(
         self,

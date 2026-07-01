@@ -32,7 +32,7 @@ def prepare_solver_gray(*, gray: np.ndarray, process_size: int | None) -> np.nda
     shape = compute_solver_shape(gray.shape, process_size)
     if shape == gray.shape:
         return gray
-    return np.clip(resize_lanczos(gray, shape=shape), 0.0, 1.0)
+    return np.clip(resize_to_shape(gray, shape=shape), 0.0, 1.0)
 
 
 def compute_solver_shape(
@@ -50,7 +50,7 @@ def compute_solver_shape(
     return _scale_dim(height, scale), process_size
 
 
-def resize_lanczos(
+def resize_to_shape(
     image: np.ndarray,
     *,
     shape: tuple[int, int],
@@ -62,7 +62,7 @@ def resize_lanczos(
     resized = cv2.resize(
         array,
         dsize=(shape[1], shape[0]),
-        interpolation=cv2.INTER_LANCZOS4,
+        interpolation=cv2.INTER_CUBIC,
     )
     return np.asarray(resized, dtype=np.float64).reshape(shape)
 

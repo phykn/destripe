@@ -8,7 +8,7 @@ from .adaptive import estimate_adaptive_params, estimate_tile_mus
 from .core import UniversalStripeRemover
 from .preprocess import (
     prepare_solver_gray,
-    resize_lanczos,
+    resize_to_shape,
     rgb_to_luma,
     validate_process_size,
 )
@@ -188,7 +188,7 @@ def _destripe_grayscale(
         return solver_clean
 
     stripe = processed_gray - solver_clean
-    full_stripe = resize_lanczos(stripe, shape=gray.shape)
+    full_stripe = resize_to_shape(stripe, shape=gray.shape)
     clean = gray - full_stripe
     if proj:
         clean = np.clip(clean, 0.0, 1.0)
