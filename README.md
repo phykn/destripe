@@ -4,6 +4,8 @@ PDHG-based stripe-noise removal for NumPy images, backed by PyTorch. The solver 
 
 ## Features
 - Removes vertical and diagonal stripe patterns with five directional components.
+- Optional adaptive mode selects sparse stripe directions and `mu` strengths from the image.
+- Manual mode can restrict solver directions with `directions=[...]`; `directions=None` keeps all five modes.
 - Accepts grayscale `(H, W)`, single-channel `(H, W, 1)`, and RGB `(H, W, 3)` arrays.
 - Preserves input shape and dtype; integer outputs are clipped to their dtype range.
 - For RGB inputs, estimates stripes on Rec. 601 luminance and subtracts them from each channel.
@@ -23,8 +25,7 @@ image = ...  # numpy.ndarray, shape [H, W] or [H, W, 3]
 
 clean = destripe(
     image,
-    mu1=0.33,
-    mu2=0.003,
+    adaptive=True,  # automatically chooses directions and mu strengths
     iterations=500,
     tiles=1,       # >1 for n x n tiled processing
     device="cpu",  # "cpu", "cuda", or None to auto-select
@@ -33,8 +34,10 @@ clean = destripe(
 
 ## Parameters
 - `image`: numeric NumPy-compatible array with shape `(H, W)`, `(H, W, 1)`, or `(H, W, 3)`.
-- `mu1` (default `0.33`): TV weight. Higher smooths more and removes stronger stripes; loses fine detail.
-- `mu2` (default `0.003`): ℓ² stripe penalty. Higher extracts stripes more eagerly; can leak real structure.
+- `adaptive` (default `False`): estimate directions and `mu` automatically. Explicit `directions`, `mu1`, and `mu2` are ignored with a warning.
+- `directions` (default `None`): manual solver modes to use when `adaptive=False`. `None` uses all five modes; pass a non-empty list containing integers `0..4` to restrict the solver.
+- `mu1` (default `0.33`): manual TV weight used when `adaptive=False`. Higher smooths more and removes stronger stripes; loses fine detail.
+- `mu2` (default `0.003`): manual ℓ² stripe penalty used when `adaptive=False`. Higher extracts stripes more eagerly; can leak real structure.
 - `iterations` (default `500`): maximum PDHG iterations.
 - `tol` (default `1e-5`): relative-change tolerance for early stopping, checked every 20 iterations.
 - `tiles` (default `1`): number of tiles per side. Use values greater than `1` when the image does not fit in memory or stripes are locally non-stationary.
@@ -49,7 +52,7 @@ clean = destripe(
 - Typical to strong stripes: `[0.33, 0.003]`, `[0.4, 0.007]`
 - Severe corruption / short stripes: `[0.5, 0.017]`
 
-Starting points, not universal optima.
+Adaptive mode clamps its estimates to the documented range. These pairs remain manual-mode anchors, not guaranteed optima.
 
 ## Reference
 - https://github.com/NiklasRottmayer/General-Stripe-Removal
