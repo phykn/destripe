@@ -4,13 +4,50 @@ import warnings
 import numpy as np
 import torch
 
-from .adaptive import estimate_adaptive_params
+from .adaptive import estimate_adaptive_params, smooth_tile_mus
 from .core import UniversalStripeRemover
 
 # Rec. 601 luma coefficients (standard for NTSC/JPEG grayscale conversion)
 _LUMA_R = 0.2989
 _LUMA_G = 0.5870
 _LUMA_B = 0.1140
+
+
+def _estimate_tile_mus(
+    gray: np.ndarray,
+    *,
+    tiles: int,
+    directions: tuple[int, ...],
+) -> list[tuple[float, float]]:
+    if tiles <= 1:
+        return []
+    h, w = gray.shape
+    pad_h = (tiles - h % tiles) % tiles
+    pad_w = (tiles - w % tiles) % tiles
+    pad_mode = (
+        "edge"
+        if ((pad_h > 0 and h <= 1) or (pad_w > 0 and w <= 1))
+        else "reflect"
+    )
+    padded = np.pad(gray, ((0, pad_h), (0, pad_w)), mode=pad_mode)
+    core_h = padded.shape[0] // tiles
+    core_w = padded.shape[1] // tiles
+    mus = np.empty((tiles, tiles, 2), dtype=np.float64)
+    for row in range(tiles):
+        for col in range(tiles):
+            tile = padded[
+                row * core_h : (row + 1) * core_h,
+                col * core_w : (col + 1) * core_w,
+            ]
+            params = estimate_adaptive_params(tile, fixed_directions=directions)
+            mus[row, col, 0] = params.mu1
+            mus[row, col, 1] = params.mu2
+    smoothed = smooth_tile_mus(mus)
+    return [
+        (float(smoothed[row, col, 0]), float(smoothed[row, col, 1]))
+        for row in range(tiles)
+        for col in range(tiles)
+    ]
 
 
 def destripe(
@@ -97,6 +134,13 @@ def destripe(
             directions=effective_directions,
             device=device,
         )
+        tile_mus = None
+        if adaptive and tiles > 1:
+            tile_mus = _estimate_tile_mus(
+                gray=normalized,
+                tiles=tiles,
+                directions=remover.directions,
+            )
         clean = _run_grayscale(
             remover=remover,
             gray=normalized,
@@ -106,6 +150,7 @@ def destripe(
             overlap=overlap,
             proj=proj,
             verbose=verbose,
+            tile_mus=tile_mus,
         )
     elif normalized.ndim == 3 and normalized.shape[2] in {1, 3}:
         if normalized.shape[2] == 3:
@@ -125,6 +170,13 @@ def destripe(
             directions=effective_directions,
             device=device,
         )
+        tile_mus = None
+        if adaptive and tiles > 1:
+            tile_mus = _estimate_tile_mus(
+                gray=gray,
+                tiles=tiles,
+                directions=remover.directions,
+            )
         clean_gray = _run_grayscale(
             remover=remover,
             gray=gray,
@@ -134,6 +186,7 @@ def destripe(
             overlap=overlap,
             proj=proj,
             verbose=verbose,
+            tile_mus=tile_mus,
         )
         stripe = gray - clean_gray
         clean = normalized - stripe[..., np.newaxis]
@@ -164,7 +217,7 @@ def _make_remover(
     device: torch.device | str | None,
 ) -> UniversalStripeRemover:
     if adaptive:
-        params = estimate_adaptive_params(gray)
+        params = estimate_adaptive_params(gray, fixed_directions=None)
         return UniversalStripeRemover(
             mu1=params.mu1,
             mu2=params.mu2,
@@ -188,6 +241,7 @@ def _run_grayscale(
     overlap: int,
     proj: bool,
     verbose: bool,
+    tile_mus: list[tuple[float, float]] | None = None,
 ) -> np.ndarray:
     out = remover.process_tiled(
         image=gray,
@@ -197,5 +251,6 @@ def _run_grayscale(
         overlap=overlap,
         proj=proj,
         verbose=verbose,
+        tile_mus=tile_mus,
     )
     return out.numpy()

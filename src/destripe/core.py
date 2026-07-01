@@ -1,4 +1,5 @@
 import math
+import numbers
 from collections.abc import Sequence
 
 import numpy as np
@@ -111,6 +112,7 @@ class UniversalStripeRemover:
         overlap: int = 64,
         proj: bool = True,
         verbose: bool = False,
+        tile_mus: Sequence[tuple[float, float]] | None = None,
     ) -> torch.Tensor:
         """Destripe a grayscale image tile-by-tile.
 
@@ -124,6 +126,8 @@ class UniversalStripeRemover:
                 non-negative.
             proj: Whether to project the clean component onto ``[0, 1]``.
             verbose: Whether to print iteration progress.
+            tile_mus: Optional ``(mu1, mu2)`` values for each tile in row-major
+                order. When omitted, tiles use the existing batch path.
 
         Returns:
             A tensor with shape ``(H, W)``.
@@ -145,6 +149,17 @@ class UniversalStripeRemover:
         else:
             raise ValueError("image must have shape (H, W) or (1, H, W).")
 
+        validated_tile_mus = None
+        if tile_mus is not None and tiles > 1:
+            validated_tile_mus = self._validate_tile_mus(
+                tile_mus=tile_mus,
+                expected_count=tiles * tiles,
+            )
+
+        orig_h, orig_w = image_2d.shape
+        if min(orig_h, orig_w) < 2:
+            return image_2d.clone()
+
         if tiles <= 1:
             return self.process(
                 image=image_2d,
@@ -154,15 +169,26 @@ class UniversalStripeRemover:
                 verbose=verbose,
             )
 
-        orig_h, orig_w = image_2d.shape
+        pad_bottom = (tiles - orig_h % tiles) % tiles
+        pad_right = (tiles - orig_w % tiles) % tiles
+        padded_h = orig_h + pad_bottom
+        padded_w = orig_w + pad_right
+        core_h, core_w = padded_h // tiles, padded_w // tiles
+        if core_h < 2 or core_w < 2:
+            return self.process(
+                image=image_2d,
+                iterations=iterations,
+                tol=tol,
+                proj=proj,
+                verbose=verbose,
+            )
+
         padded_image = self._pad_reflect(
             t=image_2d,
-            pad_bottom=(tiles - orig_h % tiles) % tiles,
-            pad_right=(tiles - orig_w % tiles) % tiles,
+            pad_bottom=pad_bottom,
+            pad_right=pad_right,
         )
 
-        padded_h, padded_w = padded_image.shape
-        core_h, core_w = padded_h // tiles, padded_w // tiles
         overlap_pixels = min(overlap, core_h // 4, core_w // 4)
 
         padded_image = self._pad_reflect(
@@ -191,13 +217,33 @@ class UniversalStripeRemover:
                 f"{tile_h}x{tile_w}, overlap={overlap_pixels}"
             )
 
-        cleaned_tiles = self.process(
-            image=tile_tensor,
-            iterations=iterations,
-            tol=tol,
-            proj=proj,
-            verbose=verbose,
-        )
+        if tile_mus is None:
+            cleaned_tiles = self.process(
+                image=tile_tensor,
+                iterations=iterations,
+                tol=tol,
+                proj=proj,
+                verbose=verbose,
+            )
+        else:
+            original_mu1, original_mu2 = self.mu1, self.mu2
+            cleaned_list = []
+            try:
+                for tile, (tile_mu1, tile_mu2) in zip(tile_tensor, validated_tile_mus):
+                    self.mu1 = float(tile_mu1)
+                    self.mu2 = float(tile_mu2)
+                    cleaned_list.append(
+                        self.process(
+                            image=tile,
+                            iterations=iterations,
+                            tol=tol,
+                            proj=proj,
+                            verbose=verbose,
+                        )
+                    )
+            finally:
+                self.mu1, self.mu2 = original_mu1, original_mu2
+            cleaned_tiles = torch.stack(tensors=cleaned_list)
 
         blend_weight = self._cosine_window(h=tile_h, w=tile_w, margin=overlap_pixels).to(
             device=cleaned_tiles.device, dtype=cleaned_tiles.dtype
@@ -222,6 +268,41 @@ class UniversalStripeRemover:
             overlap_pixels : overlap_pixels + padded_h,
             overlap_pixels : overlap_pixels + padded_w,
         ][:orig_h, :orig_w]
+
+    @staticmethod
+    def _validate_tile_mus(
+        tile_mus: Sequence[tuple[float, float]],
+        expected_count: int,
+    ) -> list[tuple[float, float]]:
+        try:
+            count = len(tile_mus)
+        except TypeError as exc:
+            raise ValueError("tile_mus must be a sequence of (mu1, mu2) pairs.") from exc
+        if count != expected_count:
+            raise ValueError("tile_mus length must match the number of tiles.")
+
+        validated = []
+        for entry in tile_mus:
+            if (
+                not isinstance(entry, Sequence)
+                or isinstance(entry, (str, bytes))
+                or len(entry) != 2
+            ):
+                raise ValueError("tile_mus entries must be 2-item numeric pairs.")
+            mu1, mu2 = entry
+            if (
+                isinstance(mu1, bool)
+                or isinstance(mu2, bool)
+                or not isinstance(mu1, numbers.Real)
+                or not isinstance(mu2, numbers.Real)
+            ):
+                raise ValueError("tile_mus entries must be finite numeric pairs.")
+            mu1_float = float(mu1)
+            mu2_float = float(mu2)
+            if not math.isfinite(mu1_float) or not math.isfinite(mu2_float):
+                raise ValueError("tile_mus entries must be finite numeric pairs.")
+            validated.append((mu1_float, mu2_float))
+        return validated
 
     # --- Solver ---
 

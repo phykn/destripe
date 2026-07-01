@@ -172,6 +172,95 @@ class TestProcessTiled:
         with pytest.raises(ValueError, match="overlap"):
             remover.process_tiled(image=torch.rand(32, 32), tiles=2, overlap=-1)
 
+    def test_tile_mus_length_error_restores_mus(
+        self, remover: UniversalStripeRemover
+    ) -> None:
+        original_mu1, original_mu2 = remover.mu1, remover.mu2
+
+        with pytest.raises(ValueError, match="tile_mus"):
+            remover.process_tiled(
+                image=torch.rand(8, 8),
+                tiles=2,
+                iterations=1,
+                overlap=0,
+                tile_mus=[(0.1, 0.0017)],
+            )
+
+        assert remover.mu1 == original_mu1
+        assert remover.mu2 == original_mu2
+
+    @pytest.mark.parametrize(
+        "tile_mus",
+        [
+            [0.1, 0.0017, 0.2, 0.003],
+            [(0.1, 0.0017, 0.2)] * 4,
+            [("bad", 0.0017)] * 4,
+            [(True, 0.0017)] * 4,
+            [(np.nan, 0.0017)] * 4,
+            [(0.1, np.inf)] * 4,
+        ],
+    )
+    def test_malformed_tile_mus_raise_value_error(
+        self,
+        remover: UniversalStripeRemover,
+        tile_mus: object,
+    ) -> None:
+        with pytest.raises(ValueError, match="tile_mus"):
+            remover.process_tiled(
+                image=torch.rand(8, 8),
+                tiles=2,
+                iterations=1,
+                overlap=0,
+                tile_mus=tile_mus,  # type: ignore[arg-type]
+            )
+
+    @pytest.mark.parametrize(
+        ("shape", "tile_mus"),
+        [
+            ((1, 8), [(float("nan"), 0.1)] * 16),
+            ((3, 8), [0.1] * 16),
+            ((3, 8), [(True, 0.1)] * 16),
+        ],
+    )
+    def test_malformed_tile_mus_raise_on_fallback_dimensions(
+        self,
+        remover: UniversalStripeRemover,
+        shape: tuple[int, int],
+        tile_mus: object,
+    ) -> None:
+        with pytest.raises(ValueError, match="tile_mus"):
+            remover.process_tiled(
+                image=torch.rand(shape),
+                tiles=4,
+                iterations=1,
+                overlap=0,
+                tile_mus=tile_mus,  # type: ignore[arg-type]
+            )
+
+    def test_tile_mus_restore_after_tile_processing_error(
+        self,
+        remover: UniversalStripeRemover,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        original_mu1, original_mu2 = remover.mu1, remover.mu2
+
+        def fail_process(**_: object) -> torch.Tensor:
+            raise RuntimeError("forced tile failure")
+
+        monkeypatch.setattr(remover, "process", fail_process)
+
+        with pytest.raises(RuntimeError, match="forced tile failure"):
+            remover.process_tiled(
+                image=torch.rand(8, 8),
+                tiles=2,
+                iterations=1,
+                overlap=0,
+                tile_mus=[(0.1, 0.0017)] * 4,
+            )
+
+        assert remover.mu1 == original_mu1
+        assert remover.mu2 == original_mu2
+
 
 class TestAdaptiveEstimator:
     def test_vertical_stripes_select_mode_zero(self) -> None:
@@ -303,6 +392,53 @@ class TestDestripe:
     def test_adaptive_rgb(self) -> None:
         img = np.random.default_rng(15).random((32, 32, 3)).astype(np.float32)
         result = destripe(img, adaptive=True, iterations=10)
+        assert result.shape == img.shape
+        assert result.dtype == img.dtype
+
+    def test_adaptive_tiled_passes_tile_mus(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from destripe import ops
+        from destripe.adaptive import AdaptiveParams
+
+        seen = {}
+
+        def fake_estimate(
+            gray: np.ndarray, *, fixed_directions=None
+        ) -> AdaptiveParams:
+            return AdaptiveParams(
+                directions=(0,), mu1=0.33, mu2=0.003, confidence=1.0
+            )
+
+        original = UniversalStripeRemover.process_tiled
+
+        def spy_process_tiled(self, *args, **kwargs):
+            seen["tile_mus"] = kwargs.get("tile_mus")
+            return original(self, *args, **kwargs)
+
+        monkeypatch.setattr(ops, "estimate_adaptive_params", fake_estimate)
+        monkeypatch.setattr(UniversalStripeRemover, "process_tiled", spy_process_tiled)
+
+        img = np.random.default_rng(18).random((32, 32))
+        result = destripe(img, adaptive=True, iterations=5, tiles=2, overlap=4)
+
+        assert result.shape == img.shape
+        assert seen["tile_mus"] is not None
+        assert len(seen["tile_mus"]) == 4
+
+    def test_adaptive_tiled_dtype_shape(self) -> None:
+        img = np.random.default_rng(16).random((48, 40, 3)).astype(np.float32)
+        result = destripe(img, adaptive=True, iterations=5, tiles=3, overlap=6)
+        assert result.shape == img.shape
+        assert result.dtype == img.dtype
+
+    @pytest.mark.parametrize("shape", [(1, 8), (3, 8)])
+    def test_adaptive_tiled_tiny_images_return_shape_dtype(
+        self, shape: tuple[int, int]
+    ) -> None:
+        img = np.random.default_rng(19).random(shape)
+        result = destripe(img, adaptive=True, tiles=4, iterations=1)
         assert result.shape == img.shape
         assert result.dtype == img.dtype
 
