@@ -31,10 +31,11 @@ def test_adaptive_constants_live_in_constants_module() -> None:
     from destripe.adaptive import constants, estimate
 
     assert constants.ALL_DIRECTIONS == (0, 1, 2, 3, 4)
-    assert constants.MU1_DENOMINATORS == (6, 5, 4, 3, 2)
+    assert constants.ADAPTIVE_LEVELS == (0, 1, 2, 3)
+    assert constants.MU1_DENOMINATORS == (6, 5, 4, 3)
     assert constants.MU2_DENOMINATORS == (300, 240, 180, 120, 100, 90, 60)
     assert constants.MU1_MIN == 1 / 6
-    assert constants.MU1_MAX == 1 / 2
+    assert constants.MU1_MAX == 1 / 3
     assert constants.MU2_MIN == 1 / 300
     assert constants.MU2_MAX == 1 / 60
     assert constants.EPS == 1e-9
@@ -130,7 +131,9 @@ def test_adaptive_direction_names_describe_their_inputs_and_roles() -> None:
     assert "def _measure_entropy(" in strength_source
     assert "def _distribution_concentration(" not in strength_source
     assert "def _distribution_entropy(" not in strength_source
-    assert "def _snap_log(" in strength_source
+    assert "def _measure_sure(" in strength_source
+    assert "def _estimate_sigma(" in strength_source
+    assert "def _snap_log(" not in strength_source
     assert "def _fit_cost_boundary(" not in strength_source
     assert "def _fit_boundary(" not in strength_source
     assert "parallel_cost" not in strength_source

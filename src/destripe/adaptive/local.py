@@ -9,6 +9,7 @@ def estimate_tile_mus(
     gray: np.ndarray,
     *,
     tiles: int,
+    level: int,
     directions: tuple[int, ...],
 ) -> list[tuple[float, float]]:
     if tiles <= 1:
@@ -28,7 +29,11 @@ def estimate_tile_mus(
 
     tile_mu_pairs = np.empty((tiles * tiles, 2), dtype=np.float64)
     for index, tile in enumerate(tile_grid.reshape(-1, tile_h, tile_w)):
-        params = estimate_adaptive_params(tile, fixed_directions=directions)
+        params = estimate_adaptive_params(
+            tile,
+            level=level,
+            fixed_directions=directions,
+        )
         tile_mu_pairs[index] = (params.mu1, params.mu2)
 
     tile_mu_grid = tile_mu_pairs.reshape(tiles, tiles, 2)

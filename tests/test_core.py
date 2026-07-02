@@ -334,14 +334,31 @@ class TestAdaptiveEstimator:
         img = np.zeros((64, 64), dtype=np.float64)
         img[:, 12] = 1.0
         img[:, 32] = 0.8
-        params = estimate_adaptive_params(img)
+        params = estimate_adaptive_params(img, level=3)
         assert params.directions[0] == 0
-        assert params.mu1 == pytest.approx(1 / 2)
+        assert params.mu1 == pytest.approx(1 / 3)
         assert params.mu2 == pytest.approx(constants.MU2_MIN)
-        assert 1 / 6 <= params.mu1 <= 1 / 2
+        assert 1 / 6 <= params.mu1 <= 1 / 3
         assert 1 / 300 <= params.mu2 <= 1 / 60
 
-    def test_faint_coherent_stripes_raise_tv_weight(self) -> None:
+    @pytest.mark.parametrize(
+        ("level", "mu1"),
+        [
+            (0, 1 / 6),
+            (1, 1 / 5),
+            (2, 1 / 4),
+            (3, 1 / 3),
+        ],
+    )
+    def test_level_sets_mu1(self, level: int, mu1: float) -> None:
+        img = np.zeros((48, 48), dtype=np.float64)
+        img[:, 12] = 1.0
+
+        params = estimate_adaptive_params(img, level=level)
+
+        assert params.mu1 == pytest.approx(mu1)
+
+    def test_faint_coherent_stripes_choose_low_mu2(self) -> None:
         from destripe.adaptive import constants
 
         rng = np.random.default_rng(1234)
@@ -359,19 +376,14 @@ class TestAdaptiveEstimator:
         for col, amp in [(24, 0.015), (57, -0.012), (90, 0.0105), (112, -0.009)]:
             img[:, col] = np.clip(img[:, col] + amp, 0.0, 1.0)
 
-        params = estimate_adaptive_params(img)
+        params = estimate_adaptive_params(img, level=2)
 
         assert params.directions[0] == 0
-        assert any(
-            params.mu1 == pytest.approx(1 / denominator)
-            for denominator in constants.MU1_DENOMINATORS
-        )
+        assert params.mu1 == pytest.approx(1 / 4)
         assert any(
             params.mu2 == pytest.approx(1 / denominator)
             for denominator in constants.MU2_DENOMINATORS
         )
-        assert params.mu1 > constants.MU1_MIN
-        assert params.mu1 < 1 / 3
         assert params.mu2 <= 1 / 120
 
     def test_directional_texture_uses_sparse_stripe_guard(self) -> None:
@@ -382,16 +394,34 @@ class TestAdaptiveEstimator:
             2 * np.pi * y * 16
         )
 
-        params = estimate_adaptive_params(img)
+        params = estimate_adaptive_params(img, level=2)
 
-        assert params.mu1 < 1 / 3
+        assert params.mu1 == pytest.approx(1 / 4)
         assert params.mu2 > 1 / 120
+
+    def test_mu2_uses_data_with_same_level(self) -> None:
+        h = w = 96
+        strong = np.zeros((h, w), dtype=np.float64)
+        strong[:, 20] = 1.0
+        strong[:, 60] = 0.8
+
+        x = np.linspace(0, 1, w).reshape(1, -1)
+        y = np.linspace(0, 1, h).reshape(-1, 1)
+        texture = 0.5 + 0.05 * np.sin(2 * np.pi * x * 12) * np.sin(
+            2 * np.pi * y * 12
+        )
+
+        strong_params = estimate_adaptive_params(strong, level=2)
+        texture_params = estimate_adaptive_params(texture, level=2)
+
+        assert strong_params.mu1 == pytest.approx(texture_params.mu1)
+        assert strong_params.mu2 < texture_params.mu2
 
     def test_estimator_is_deterministic(self) -> None:
         rng = np.random.default_rng(14)
         img = rng.random((48, 48))
-        p1 = estimate_adaptive_params(img)
-        p2 = estimate_adaptive_params(img)
+        p1 = estimate_adaptive_params(img, level=2)
+        p2 = estimate_adaptive_params(img, level=2)
         assert p1 == p2
 
     def test_estimator_normalizes_affine_intensity_scale(self) -> None:
@@ -400,8 +430,8 @@ class TestAdaptiveEstimator:
         img[:, 10] += 0.7
         img = np.clip(img, 0.0, 1.0)
 
-        p1 = estimate_adaptive_params(img)
-        p2 = estimate_adaptive_params(img * 100.0 + 20.0)
+        p1 = estimate_adaptive_params(img, level=2)
+        p2 = estimate_adaptive_params(img * 100.0 + 20.0, level=2)
 
         assert p1.directions == p2.directions
         assert p1.mu1 == pytest.approx(p2.mu1)
@@ -429,22 +459,29 @@ class TestAdaptiveEstimator:
         img[:, 12] = 1.0
         img[:, 32] = 0.8
 
-        single = estimate_adaptive_params(img, fixed_directions=(0,))
-        multiple = estimate_adaptive_params(img, fixed_directions=(0, 1))
+        single = estimate_adaptive_params(img, level=2, fixed_directions=(0,))
+        multiple = estimate_adaptive_params(img, level=2, fixed_directions=(0, 1))
 
         assert single.directions == (0,)
         assert multiple.directions == (0, 1)
         assert single.mu1 == pytest.approx(multiple.mu1)
-        assert single.mu2 == pytest.approx(multiple.mu2)
 
     @pytest.mark.parametrize("shape", [(1, 1), (3, 8), (8, 3)])
     def test_estimator_handles_small_arrays(self, shape: tuple[int, int]) -> None:
         img = np.random.default_rng(17).random(shape)
-        params = estimate_adaptive_params(img)
+        params = estimate_adaptive_params(img, level=2)
 
         assert params.directions
-        assert 1 / 6 <= params.mu1 <= 1 / 2
+        assert params.mu1 == pytest.approx(1 / 4)
         assert 1 / 300 <= params.mu2 <= 1 / 60
+
+    @pytest.mark.parametrize("level", [-1, 4, 1.5, True, None])
+    def test_invalid_adaptive_level(self, level: object) -> None:
+        with pytest.raises(ValueError, match="adaptive"):
+            estimate_adaptive_params(
+                np.random.default_rng(18).random((8, 8)),
+                level=level,  # type: ignore[arg-type]
+            )
 
     @pytest.mark.parametrize(
         "fixed_directions",
@@ -462,6 +499,7 @@ class TestAdaptiveEstimator:
         with pytest.raises(ValueError, match="directions"):
             estimate_adaptive_params(
                 np.random.default_rng(18).random((8, 8)),
+                level=2,
                 fixed_directions=fixed_directions,  # type: ignore[arg-type]
             )
 
@@ -579,9 +617,10 @@ class TestDestripe:
         calls = {}
 
         def fake_estimate(
-            gray: np.ndarray, *, fixed_directions=None
+            gray: np.ndarray, *, level: int, fixed_directions=None
         ) -> AdaptiveParams:
             calls["shape"] = gray.shape
+            calls["level"] = level
             calls["fixed_directions"] = fixed_directions
             return AdaptiveParams(
                 directions=(0,), mu1=1 / 6, mu2=1 / 300, confidence=1.0
@@ -591,19 +630,19 @@ class TestDestripe:
             ops, "estimate_adaptive_params", fake_estimate, raising=False
         )
         img = np.random.default_rng(17).random((24, 24))
-        result = destripe(img, adaptive=True, iterations=5)
+        result = destripe(img, adaptive=0, iterations=5)
 
         assert result.shape == img.shape
-        assert calls == {"shape": img.shape, "fixed_directions": None}
+        assert calls == {"shape": img.shape, "level": 0, "fixed_directions": None}
 
     def test_adaptive_grayscale_float64(self, gray_image: np.ndarray) -> None:
-        result = destripe(gray_image, adaptive=True, iterations=10)
+        result = destripe(gray_image, adaptive=2, iterations=10)
         assert result.shape == gray_image.shape
         assert result.dtype == gray_image.dtype
 
     def test_adaptive_rgb(self) -> None:
         img = np.random.default_rng(15).random((32, 32, 3)).astype(np.float32)
-        result = destripe(img, adaptive=True, iterations=10)
+        result = destripe(img, adaptive=2, iterations=10)
         assert result.shape == img.shape
         assert result.dtype == img.dtype
 
@@ -617,8 +656,9 @@ class TestDestripe:
         seen = {}
 
         def fake_estimate(
-            gray: np.ndarray, *, fixed_directions=None
+            gray: np.ndarray, *, level: int, fixed_directions=None
         ) -> AdaptiveParams:
+            assert level == 3
             return AdaptiveParams(
                 directions=(0,), mu1=1 / 3, mu2=1 / 300, confidence=1.0
             )
@@ -633,7 +673,7 @@ class TestDestripe:
         monkeypatch.setattr(UniversalStripeRemover, "process_tiled", spy_process_tiled)
 
         img = np.random.default_rng(18).random((32, 32))
-        result = destripe(img, adaptive=True, iterations=5, tiles=2, overlap=4)
+        result = destripe(img, adaptive=3, iterations=5, tiles=2, overlap=4)
 
         assert result.shape == img.shape
         assert seen["tile_mus"] is not None
@@ -641,7 +681,7 @@ class TestDestripe:
 
     def test_adaptive_tiled_dtype_shape(self) -> None:
         img = np.random.default_rng(16).random((48, 40, 3)).astype(np.float32)
-        result = destripe(img, adaptive=True, iterations=5, tiles=3, overlap=6)
+        result = destripe(img, adaptive=2, iterations=5, tiles=3, overlap=6)
         assert result.shape == img.shape
         assert result.dtype == img.dtype
 
@@ -777,9 +817,9 @@ class TestDestripe:
         calls = []
 
         def fake_estimate(
-            gray: np.ndarray, *, fixed_directions=None
+            gray: np.ndarray, *, level: int, fixed_directions=None
         ) -> AdaptiveParams:
-            calls.append((gray.shape, fixed_directions))
+            calls.append((gray.shape, level, fixed_directions))
             return AdaptiveParams(
                 directions=(0,), mu1=1 / 3, mu2=1 / 300, confidence=1.0
             )
@@ -797,10 +837,10 @@ class TestDestripe:
         monkeypatch.setattr(destripe_ops, "UniversalStripeRemover", FakeRemover)
 
         img = np.random.default_rng(20).random((20, 30))
-        result = destripe(img, adaptive=True, process_size=15, iterations=1)
+        result = destripe(img, adaptive=3, process_size=15, iterations=1)
 
         assert result.shape == img.shape
-        assert calls == [((10, 15), None)]
+        assert calls == [((10, 15), 3, None)]
 
     @pytest.mark.parametrize("process_size", [0, -1, 1.1, float("nan"), True])
     def test_invalid_process_size(self, process_size: object) -> None:
@@ -815,13 +855,13 @@ class TestDestripe:
         self, shape: tuple[int, int]
     ) -> None:
         img = np.random.default_rng(19).random(shape)
-        result = destripe(img, adaptive=True, tiles=4, iterations=1)
+        result = destripe(img, adaptive=2, tiles=4, iterations=1)
         assert result.shape == img.shape
         assert result.dtype == img.dtype
 
     def test_adaptive_constant_returns_copy(self) -> None:
         img = np.full((16, 16), 12, dtype=np.uint8)
-        result = destripe(img, adaptive=True)
+        result = destripe(img, adaptive=2)
         assert np.array_equal(result, img)
         assert result is not img
 
@@ -860,16 +900,25 @@ class TestDestripe:
 
     def test_adaptive_warns_when_manual_values_are_ignored(self) -> None:
         img = np.random.default_rng(13).random((24, 24))
-        with pytest.warns(UserWarning, match="adaptive=True ignores"):
+        with pytest.warns(UserWarning, match="adaptive level ignores"):
             result = destripe(
                 img,
-                adaptive=True,
+                adaptive=2,
                 directions=[0],
                 mu1=1 / 2,
                 mu2=1 / 60,
                 iterations=5,
             )
         assert result.shape == img.shape
+
+    @pytest.mark.parametrize("adaptive", [True, False, -1, 4, 1.5, "2"])
+    def test_invalid_adaptive_value(self, adaptive: object) -> None:
+        with pytest.raises(ValueError, match="adaptive"):
+            destripe(
+                np.random.default_rng(13).random((8, 8)),
+                adaptive=adaptive,  # type: ignore[arg-type]
+                iterations=1,
+            )
 
     def test_manual_arguments_are_forwarded_to_remover(
         self, monkeypatch: pytest.MonkeyPatch
@@ -927,13 +976,17 @@ class TestDestripe:
         estimate_calls: list[dict[str, object]] = []
 
         def fake_estimate(
-            gray: np.ndarray, *, fixed_directions=None
+            gray: np.ndarray, *, level: int, fixed_directions=None
         ) -> AdaptiveParams:
             estimate_calls.append(
-                {"shape": gray.shape, "fixed_directions": fixed_directions}
+                {
+                    "shape": gray.shape,
+                    "level": level,
+                    "fixed_directions": fixed_directions,
+                }
             )
             return AdaptiveParams(
-                directions=(0,), mu1=1 / 6, mu2=1 / 300, confidence=1.0
+                directions=(0,), mu1=1 / 4, mu2=1 / 300, confidence=1.0
             )
 
         class FakeRemover:
@@ -960,10 +1013,10 @@ class TestDestripe:
         monkeypatch.setattr(destripe_ops, "estimate_adaptive_params", fake_estimate)
 
         img = np.random.default_rng(15).random((8, 8))
-        with pytest.warns(UserWarning, match="adaptive=True ignores"):
+        with pytest.warns(UserWarning, match="adaptive level ignores"):
             result = destripe(
                 img,
-                adaptive=True,
+                adaptive=2,
                 mu1=1 / 2,
                 mu2=1 / 60,
                 directions=[1, 4],
@@ -973,11 +1026,14 @@ class TestDestripe:
         assert result.shape == img.shape
         assert calls == [
             {
-                "mu1": 1 / 6,
+                "mu1": 1 / 4,
                 "mu2": 1 / 300,
                 "device": None,
                 "directions": (0,),
             }
+        ]
+        assert estimate_calls == [
+            {"shape": img.shape, "level": 2, "fixed_directions": None}
         ]
 
     def test_adaptive_refines_clean_after_solver(
@@ -988,10 +1044,11 @@ class TestDestripe:
         seen: dict[str, object] = {}
 
         def fake_estimate(
-            gray: np.ndarray, *, fixed_directions=None
+            gray: np.ndarray, *, level: int, fixed_directions=None
         ) -> AdaptiveParams:
+            assert level == 2
             return AdaptiveParams(
-                directions=(0,), mu1=1 / 6, mu2=1 / 300, confidence=1.0
+                directions=(0,), mu1=1 / 4, mu2=1 / 300, confidence=1.0
             )
 
         def fake_refine(
@@ -1023,7 +1080,7 @@ class TestDestripe:
         monkeypatch.setattr(destripe_ops, "UniversalStripeRemover", FakeRemover)
 
         img = np.random.default_rng(21).random((8, 8))
-        result = destripe(img, adaptive=True, iterations=1, proj=False)
+        result = destripe(img, adaptive=2, iterations=1, proj=False)
 
         assert seen == {
             "directions": (0,),

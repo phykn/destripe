@@ -5,12 +5,8 @@ import torch
 
 from .constants import (
     EPS,
-    MU1_DENOMINATORS,
-    MU1_MAX,
-    MU1_MIN,
     MU2_DENOMINATORS,
-    MU2_MAX,
-    MU2_MIN,
+    NORMAL_MAD_SCALE,
 )
 from .stripe import project
 
@@ -21,7 +17,7 @@ def estimate_strength(
     selected_directions: tuple[int, ...],
     score_weights: np.ndarray,
     selection_weights: np.ndarray,
-) -> tuple[float, float, float]:
+) -> tuple[float, float]:
     score_strength = _measure_concentration(score_weights)
     selection_strength = _measure_concentration(selection_weights)
     ambiguity = _measure_entropy(score_weights)
@@ -35,20 +31,96 @@ def estimate_strength(
     )
     confidence = math.sqrt(direction_confidence * stripe_coherence)
 
-    stripe_permission = math.sqrt(selection_strength * stripe_coherence)
-    target_mu1 = _interpolate_log(
-        low=MU1_MIN,
-        high=MU1_MAX,
-        position=stripe_permission,
+    mu2 = _estimate_mu2(
+        high_pass=high_pass,
+        selected_directions=selected_directions,
+        selection_weights=selection_weights,
     )
-    target_mu2 = _interpolate_log(
-        low=MU2_MIN,
-        high=MU2_MAX,
-        position=1 - stripe_permission,
-    )
-    mu1 = _snap_log(value=target_mu1, denominators=MU1_DENOMINATORS)
-    mu2 = _snap_log(value=target_mu2, denominators=MU2_DENOMINATORS)
-    return mu1, mu2, confidence
+    return mu2, confidence
+
+
+def _estimate_mu2(
+    *,
+    high_pass: torch.Tensor,
+    selected_directions: tuple[int, ...],
+    selection_weights: np.ndarray,
+) -> float:
+    candidates = [1 / denominator for denominator in MU2_DENOMINATORS]
+    risks = [
+        _measure_mu2_risk(
+            high_pass=high_pass,
+            selected_directions=selected_directions,
+            selection_weights=selection_weights,
+            threshold=threshold,
+        )
+        for threshold in candidates
+    ]
+    best_risk = min(risks)
+    # When SURE cannot separate thresholds, avoid inventing a stripe.
+    tied = [
+        candidate
+        for candidate, risk in zip(candidates, risks)
+        if risk <= best_risk + EPS
+    ]
+    return max(tied)
+
+
+def _measure_mu2_risk(
+    *,
+    high_pass: torch.Tensor,
+    selected_directions: tuple[int, ...],
+    selection_weights: np.ndarray,
+    threshold: float,
+) -> float:
+    risks = []
+    weights = []
+    for mode in selected_directions:
+        stripe_img = project(high_pass, mode)
+        sigma = _estimate_sigma(stripe_img)
+        risks.append(_measure_sure(stripe_img, threshold=threshold, sigma=sigma))
+        weights.append(float(selection_weights[mode]))
+
+    if not risks:
+        return 0.0
+
+    weight_array = np.array(weights, dtype=np.float64)
+    total_weight = float(weight_array.sum())
+    if total_weight > EPS:
+        return _average_weighted(risks, weight_array, total_weight)
+    return float(np.mean(risks))
+
+
+def _measure_sure(
+    values: torch.Tensor,
+    *,
+    threshold: float,
+    sigma: float,
+) -> float:
+    arr = values.detach().cpu().numpy().reshape(-1)
+    if arr.size == 0:
+        return 0.0
+
+    abs_arr = np.abs(arr)
+    sigma2 = sigma * sigma
+    bias = np.minimum(abs_arr * abs_arr, threshold * threshold)
+    degrees = abs_arr > threshold
+    return float(np.mean(bias + 2 * sigma2 * degrees))
+
+
+def _estimate_sigma(values: torch.Tensor) -> float:
+    arr = values.detach().cpu().numpy().reshape(-1)
+    if arr.size == 0:
+        return EPS
+
+    centered = arr - np.median(arr)
+    mad = float(np.median(np.abs(centered)))
+    if mad > EPS:
+        return mad / NORMAL_MAD_SCALE
+
+    std = float(np.std(arr))
+    if std > EPS:
+        return std
+    return EPS
 
 
 def _measure_concentration(weights: np.ndarray) -> float:
@@ -96,20 +168,3 @@ def _average_weighted(
     total_weight: float,
 ) -> float:
     return float(np.sum(weights * np.array(values, dtype=np.float64)) / total_weight)
-
-
-def _snap_log(value: float, denominators: tuple[int, ...]) -> float:
-    candidates = [1 / denominator for denominator in denominators]
-    log_value = math.log(max(value, EPS))
-    return min(candidates, key=lambda candidate: abs(math.log(candidate) - log_value))
-
-
-def _interpolate_log(*, low: float, high: float, position: float) -> float:
-    clipped = min(1.0, max(0.0, position))
-    if clipped <= 0:
-        return float(low)
-    if clipped >= 1:
-        return float(high)
-    return float(
-        math.exp(math.log(low) * (1 - clipped) + math.log(high) * clipped)
-    )

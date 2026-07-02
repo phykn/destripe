@@ -5,6 +5,7 @@ import numpy as np
 import torch
 
 from .adaptive import estimate_adaptive_params, estimate_tile_mus
+from .adaptive.constants import ADAPTIVE_LEVELS
 from .adaptive.refine import refine_clean
 from .core import UniversalStripeRemover
 from .preprocess import (
@@ -27,7 +28,7 @@ def destripe(
     proj: bool = True,
     device: torch.device | str | None = None,
     verbose: bool = False,
-    adaptive: bool = False,
+    adaptive: int | None = None,
     directions: Sequence[int] | None = None,
 ) -> np.ndarray:
     """Remove stripe noise from a NumPy image.
@@ -37,8 +38,8 @@ def destripe(
 
     Args:
         image: Input image.
-        mu1: Manual TV weight; ignored when adaptive=True.
-        mu2: Manual stripe sparsity weight; ignored when adaptive=True.
+        mu1: Manual TV weight; ignored when adaptive is a level.
+        mu2: Manual stripe sparsity weight; ignored when adaptive is a level.
         iterations: Maximum PDHG iterations.
         tol: Relative convergence tolerance.
         tiles: Tiles per image side.
@@ -47,8 +48,8 @@ def destripe(
         proj: Project output to [0, 1].
         device: Torch device.
         verbose: Print solver progress.
-        adaptive: Estimate directions and mu values from the image.
-        directions: Manual stripe modes; ignored when adaptive=True.
+        adaptive: None for manual settings, or level 0..3 for adaptive mode.
+        directions: Manual stripe modes; ignored when adaptive is a level.
 
     Returns:
         Destriped image with the same shape and dtype.
@@ -60,22 +61,23 @@ def destripe(
         raise ValueError("image must not contain NaN or Inf values.")
 
     process_size_value = validate_process_size(process_size)
+    adaptive_level = _validate_adaptive(adaptive)
     manual_args_used = (
         mu1 is not None
         or mu2 is not None
         or directions is not None
     )
 
-    if adaptive and manual_args_used:
+    if adaptive_level is not None and manual_args_used:
         warnings.warn(
-            "adaptive=True ignores manual directions, mu1, and mu2 values.",
+            "adaptive level ignores manual directions, mu1, and mu2 values.",
             UserWarning,
             stacklevel=2,
         )
 
-    effective_mu1 = 1 / 3 if adaptive or mu1 is None else mu1
-    effective_mu2 = 1 / 300 if adaptive or mu2 is None else mu2
-    effective_directions = None if adaptive else directions
+    effective_mu1 = 1 / 3 if adaptive_level is not None or mu1 is None else mu1
+    effective_mu2 = 1 / 300 if adaptive_level is not None or mu2 is None else mu2
+    effective_directions = None if adaptive_level is not None else directions
 
     orig_dtype = input_array.dtype
     normalized = input_array.astype(np.float64)
@@ -89,7 +91,7 @@ def destripe(
     if normalized.ndim == 2:
         clean = _destripe_grayscale(
             gray=normalized,
-            adaptive=adaptive,
+            adaptive_level=adaptive_level,
             mu1=effective_mu1,
             mu2=effective_mu2,
             directions=effective_directions,
@@ -110,7 +112,7 @@ def destripe(
 
         clean_gray = _destripe_grayscale(
             gray=gray,
-            adaptive=adaptive,
+            adaptive_level=adaptive_level,
             mu1=effective_mu1,
             mu2=effective_mu2,
             directions=effective_directions,
@@ -145,7 +147,7 @@ def destripe(
 def _destripe_grayscale(
     *,
     gray: np.ndarray,
-    adaptive: bool,
+    adaptive_level: int | None,
     mu1: float,
     mu2: float,
     directions: Sequence[int] | None,
@@ -159,8 +161,12 @@ def _destripe_grayscale(
     process_size: int | None,
 ) -> np.ndarray:
     processed_gray = prepare_solver_gray(gray=gray, process_size=process_size)
-    if adaptive:
-        params = estimate_adaptive_params(processed_gray, fixed_directions=None)
+    if adaptive_level is not None:
+        params = estimate_adaptive_params(
+            processed_gray,
+            level=adaptive_level,
+            fixed_directions=None,
+        )
         resolved_mu1 = params.mu1
         resolved_mu2 = params.mu2
         resolved_directions = params.directions
@@ -176,10 +182,11 @@ def _destripe_grayscale(
         directions=resolved_directions,
     )
     tile_mus = None
-    if adaptive and tiles > 1:
+    if adaptive_level is not None and tiles > 1:
         tile_mus = estimate_tile_mus(
             gray=processed_gray,
             tiles=tiles,
+            level=adaptive_level,
             directions=resolved_directions,
         )
     solver_clean = remover.process_tiled(
@@ -192,7 +199,7 @@ def _destripe_grayscale(
         verbose=verbose,
         tile_mus=tile_mus,
     ).numpy()
-    if adaptive:
+    if adaptive_level is not None:
         solver_clean = refine_clean(
             gray=processed_gray,
             clean=solver_clean,
@@ -209,3 +216,13 @@ def _destripe_grayscale(
     if proj:
         clean = np.clip(clean, 0.0, 1.0)
     return clean
+
+
+def _validate_adaptive(adaptive: object) -> int | None:
+    if adaptive is None:
+        return None
+    if isinstance(adaptive, bool) or not isinstance(adaptive, int):
+        raise ValueError("adaptive must be None or an integer level 0..3.")
+    if adaptive not in ADAPTIVE_LEVELS:
+        raise ValueError("adaptive must be None or an integer level 0..3.")
+    return adaptive
