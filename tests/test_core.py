@@ -386,6 +386,27 @@ class TestAdaptiveEstimator:
         )
         assert params.mu2 <= 1 / 120
 
+    def test_coherent_curtain_chooses_low_mu2(self) -> None:
+        from destripe.adaptive import constants
+
+        rng = np.random.default_rng(4321)
+        h = w = 128
+        x = np.linspace(0, 1, w).reshape(1, -1)
+        y = np.linspace(0, 1, h).reshape(-1, 1)
+        base = 0.35 + 0.25 * x + 0.15 * y
+        texture = 0.08 * np.sin(2 * np.pi * x * 7) * np.sin(2 * np.pi * y * 5)
+        profile = rng.normal(0, 1, w)
+        profile = np.convolve(profile, np.ones(5) / 5, mode="same")
+        profile = (profile - profile.mean()) / profile.std()
+        curtain = 0.02 * profile.reshape(1, -1)
+        img = base + texture + curtain
+        img = (img - img.min()) / (img.max() - img.min())
+
+        params = estimate_adaptive_params(img, level=2)
+
+        assert params.directions[0] == 0
+        assert params.mu2 == pytest.approx(constants.MU2_MIN)
+
     def test_directional_texture_uses_sparse_stripe_guard(self) -> None:
         h = w = 128
         x = np.linspace(0, 1, w).reshape(1, -1)

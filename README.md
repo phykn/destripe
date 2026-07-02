@@ -38,8 +38,8 @@ adaptive=2 -> mu1 = 1 / 4
 adaptive=3 -> mu1 = 1 / 3
 ```
 
-`mu2` is still selected from the image, using candidates in the paper's practical
-range: `1 / 300` through `1 / 60`.
+`mu2` is still selected from the image, using line-reliability-adjusted
+soft-threshold risk over `1 / 300` through `1 / 60`.
 
 The residual step projects the high-pass clean image onto the selected
 line-constant stripe subspace and scales it by split-half cross-covariance:

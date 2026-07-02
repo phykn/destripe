@@ -8,7 +8,7 @@ from .constants import (
     MU2_DENOMINATORS,
     NORMAL_MAD_SCALE,
 )
-from .stripe import project
+from .stripe import measure_shrinkage, project
 
 
 def estimate_strength(
@@ -77,6 +77,8 @@ def _measure_mu2_risk(
     for mode in selected_directions:
         stripe_img = project(high_pass, mode)
         sigma = _estimate_sigma(stripe_img)
+        reliability = measure_shrinkage(high_pass, mode)
+        sigma *= math.sqrt(max(0.0, 1 - reliability))
         risks.append(_measure_sure(stripe_img, threshold=threshold, sigma=sigma))
         weights.append(float(selection_weights[mode]))
 
