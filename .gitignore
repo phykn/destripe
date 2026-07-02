@@ -32,5 +32,6 @@ Thumbs.db
 # CLAUDE
 .claude/
 CLAUDE.md
+docs/
 docs/superpowers/
 .worktrees/

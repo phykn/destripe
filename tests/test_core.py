@@ -185,7 +185,7 @@ class TestProcessTiled:
                 tiles=2,
                 iterations=1,
                 overlap=0,
-                tile_mus=[(0.1, 0.0017)],
+                tile_mus=[(1 / 6, 1 / 300)],
             )
 
         assert remover.mu1 == original_mu1
@@ -194,11 +194,11 @@ class TestProcessTiled:
     @pytest.mark.parametrize(
         "tile_mus",
         [
-            [0.1, 0.0017, 0.2, 0.003],
-            [(0.1, 0.0017, 0.2)] * 4,
-            [("bad", 0.0017)] * 4,
-            [(True, 0.0017)] * 4,
-            [(np.nan, 0.0017)] * 4,
+            [1 / 6, 1 / 300, 1 / 5, 1 / 240],
+            [(1 / 6, 1 / 300, 1 / 5)] * 4,
+            [("bad", 1 / 300)] * 4,
+            [(True, 1 / 300)] * 4,
+            [(np.nan, 1 / 300)] * 4,
             [(0.1, np.inf)] * 4,
         ],
     )
@@ -225,7 +225,7 @@ class TestProcessTiled:
                 image=torch.rand(8, 8),
                 tiles=1,
                 iterations=1,
-                tile_mus=[(np.nan, 0.0017)],
+                tile_mus=[(np.nan, 1 / 300)],
             )
 
     @pytest.mark.parametrize(
@@ -269,7 +269,7 @@ class TestProcessTiled:
                 tiles=2,
                 iterations=1,
                 overlap=0,
-                tile_mus=[(0.1, 0.0017)] * 4,
+                tile_mus=[(1 / 6, 1 / 300)] * 4,
             )
 
         assert remover.mu1 == original_mu1
@@ -301,10 +301,10 @@ class TestProcessTiled:
         monkeypatch.setattr(remover, "_solve", fake_solve)
 
         tile_mus = [
-            (0.10, 0.0017),
-            (0.20, 0.0030),
-            (0.30, 0.0070),
-            (0.40, 0.0170),
+            (1 / 6, 1 / 300),
+            (1 / 5, 1 / 240),
+            (1 / 4, 1 / 180),
+            (1 / 3, 1 / 60),
         ]
         result = remover.process_tiled(
             image=torch.rand(8, 8),
@@ -319,11 +319,11 @@ class TestProcessTiled:
         assert calls[0]["shape"][0] == 4
         assert torch.allclose(
             calls[0]["mu1"].reshape(-1),
-            torch.tensor([0.10, 0.20, 0.30, 0.40]),
+            torch.tensor([1 / 6, 1 / 5, 1 / 4, 1 / 3]),
         )
         assert torch.allclose(
             calls[0]["mu2"].reshape(-1),
-            torch.tensor([0.0017, 0.0030, 0.0070, 0.0170]),
+            torch.tensor([1 / 300, 1 / 240, 1 / 180, 1 / 60]),
         )
 
 
@@ -336,12 +336,12 @@ class TestAdaptiveEstimator:
         img[:, 32] = 0.8
         params = estimate_adaptive_params(img)
         assert params.directions[0] == 0
-        assert params.mu1 == pytest.approx(constants.MU1_MIN)
-        assert params.mu2 <= 0.003
-        assert 0.10 <= params.mu1 <= 0.50
-        assert 0.0017 <= params.mu2 <= 0.017
+        assert params.mu1 == pytest.approx(1 / 2)
+        assert params.mu2 == pytest.approx(constants.MU2_MIN)
+        assert 1 / 6 <= params.mu1 <= 1 / 2
+        assert 1 / 300 <= params.mu2 <= 1 / 60
 
-    def test_faint_coherent_stripes_keep_tv_weight_conservative(self) -> None:
+    def test_faint_coherent_stripes_raise_tv_weight(self) -> None:
         from destripe.adaptive import constants
 
         rng = np.random.default_rng(1234)
@@ -362,8 +362,17 @@ class TestAdaptiveEstimator:
         params = estimate_adaptive_params(img)
 
         assert params.directions[0] == 0
-        assert params.mu1 == pytest.approx(constants.MU1_MIN)
-        assert params.mu2 < 0.007
+        assert any(
+            params.mu1 == pytest.approx(1 / denominator)
+            for denominator in constants.MU1_DENOMINATORS
+        )
+        assert any(
+            params.mu2 == pytest.approx(1 / denominator)
+            for denominator in constants.MU2_DENOMINATORS
+        )
+        assert params.mu1 > constants.MU1_MIN
+        assert params.mu1 < 1 / 3
+        assert params.mu2 <= 1 / 120
 
     def test_directional_texture_uses_sparse_stripe_guard(self) -> None:
         h = w = 128
@@ -375,8 +384,8 @@ class TestAdaptiveEstimator:
 
         params = estimate_adaptive_params(img)
 
-        assert params.mu1 < 0.33
-        assert params.mu2 > 0.007
+        assert params.mu1 < 1 / 3
+        assert params.mu2 > 1 / 120
 
     def test_estimator_is_deterministic(self) -> None:
         rng = np.random.default_rng(14)
@@ -434,8 +443,8 @@ class TestAdaptiveEstimator:
         params = estimate_adaptive_params(img)
 
         assert params.directions
-        assert 0.10 <= params.mu1 <= 0.50
-        assert 0.0017 <= params.mu2 <= 0.017
+        assert 1 / 6 <= params.mu1 <= 1 / 2
+        assert 1 / 300 <= params.mu2 <= 1 / 60
 
     @pytest.mark.parametrize(
         "fixed_directions",
@@ -457,21 +466,22 @@ class TestAdaptiveEstimator:
             )
 
     def test_tile_mu_smoothing_preserves_shape(self) -> None:
+        from destripe.adaptive import constants
         from destripe.adaptive import smooth_tile_mus
 
         mus = np.array(
             [
-                [[0.10, 0.0017], [0.50, 0.017]],
-                [[0.33, 0.0030], [0.40, 0.007]],
+                [[1 / 6, 1 / 300], [1 / 2, 1 / 60]],
+                [[1 / 3, 1 / 300], [1 / 4, 1 / 120]],
             ],
             dtype=np.float64,
         )
         smoothed = smooth_tile_mus(mus)
         assert smoothed.shape == mus.shape
-        assert np.all(smoothed[..., 0] >= 0.10)
-        assert np.all(smoothed[..., 0] <= 0.50)
-        assert np.all(smoothed[..., 1] >= 0.0017)
-        assert np.all(smoothed[..., 1] <= 0.017)
+        assert np.all(smoothed[..., 0] >= constants.MU1_MIN)
+        assert np.all(smoothed[..., 0] <= constants.MU1_MAX)
+        assert np.all(smoothed[..., 1] >= constants.MU2_MIN)
+        assert np.all(smoothed[..., 1] <= constants.MU2_MAX)
 
 
 class TestAdaptiveRefine:
@@ -574,7 +584,7 @@ class TestDestripe:
             calls["shape"] = gray.shape
             calls["fixed_directions"] = fixed_directions
             return AdaptiveParams(
-                directions=(0,), mu1=0.10, mu2=0.0017, confidence=1.0
+                directions=(0,), mu1=1 / 6, mu2=1 / 300, confidence=1.0
             )
 
         monkeypatch.setattr(
@@ -610,7 +620,7 @@ class TestDestripe:
             gray: np.ndarray, *, fixed_directions=None
         ) -> AdaptiveParams:
             return AdaptiveParams(
-                directions=(0,), mu1=0.33, mu2=0.003, confidence=1.0
+                directions=(0,), mu1=1 / 3, mu2=1 / 300, confidence=1.0
             )
 
         original = UniversalStripeRemover.process_tiled
@@ -771,7 +781,7 @@ class TestDestripe:
         ) -> AdaptiveParams:
             calls.append((gray.shape, fixed_directions))
             return AdaptiveParams(
-                directions=(0,), mu1=0.33, mu2=0.003, confidence=1.0
+                directions=(0,), mu1=1 / 3, mu2=1 / 300, confidence=1.0
             )
 
         class FakeRemover:
@@ -855,8 +865,8 @@ class TestDestripe:
                 img,
                 adaptive=True,
                 directions=[0],
-                mu1=0.5,
-                mu2=0.017,
+                mu1=1 / 2,
+                mu2=1 / 60,
                 iterations=5,
             )
         assert result.shape == img.shape
@@ -891,8 +901,8 @@ class TestDestripe:
         img = np.random.default_rng(14).random((8, 8))
         result = destripe(
             img,
-            mu1=0.5,
-            mu2=0.017,
+            mu1=1 / 2,
+            mu2=1 / 60,
             directions=[1, 4],
             iterations=1,
             device="cpu",
@@ -901,8 +911,8 @@ class TestDestripe:
         assert result.shape == img.shape
         assert calls == [
             {
-                "mu1": 0.5,
-                "mu2": 0.017,
+                "mu1": 1 / 2,
+                "mu2": 1 / 60,
                 "device": "cpu",
                 "directions": [1, 4],
             }
@@ -923,7 +933,7 @@ class TestDestripe:
                 {"shape": gray.shape, "fixed_directions": fixed_directions}
             )
             return AdaptiveParams(
-                directions=(0,), mu1=0.10, mu2=0.0017, confidence=1.0
+                directions=(0,), mu1=1 / 6, mu2=1 / 300, confidence=1.0
             )
 
         class FakeRemover:
@@ -954,8 +964,8 @@ class TestDestripe:
             result = destripe(
                 img,
                 adaptive=True,
-                mu1=0.5,
-                mu2=0.017,
+                mu1=1 / 2,
+                mu2=1 / 60,
                 directions=[1, 4],
                 iterations=1,
             )
@@ -963,8 +973,8 @@ class TestDestripe:
         assert result.shape == img.shape
         assert calls == [
             {
-                "mu1": 0.10,
-                "mu2": 0.0017,
+                "mu1": 1 / 6,
+                "mu2": 1 / 300,
                 "device": None,
                 "directions": (0,),
             }
@@ -981,7 +991,7 @@ class TestDestripe:
             gray: np.ndarray, *, fixed_directions=None
         ) -> AdaptiveParams:
             return AdaptiveParams(
-                directions=(0,), mu1=0.10, mu2=0.0017, confidence=1.0
+                directions=(0,), mu1=1 / 6, mu2=1 / 300, confidence=1.0
             )
 
         def fake_refine(

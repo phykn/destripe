@@ -17,8 +17,8 @@ class UniversalStripeRemover:
 
     def __init__(
         self,
-        mu1: float = 0.33,
-        mu2: float = 0.003,
+        mu1: float = 1 / 3,
+        mu2: float = 1 / 300,
         device: torch.device | str | None = None,
         directions: Sequence[int] | None = None,
     ) -> None:
@@ -545,10 +545,9 @@ class UniversalStripeRemover:
     ) -> torch.Tensor:
         win = torch.ones(h, w)
         if margin > 0:
-            ramp = 0.5 * (
-                1.0
-                - torch.cos(input=torch.linspace(start=0, end=math.pi, steps=margin))
-            )
+            ramp = (
+                1 - torch.cos(input=torch.linspace(start=0, end=math.pi, steps=margin))
+            ) / 2
             win[:margin, :] *= ramp[:, None]
             win[-margin:, :] *= ramp.flip(dims=(0,))[:, None]
             win[:, :margin] *= ramp[None, :]

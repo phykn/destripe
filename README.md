@@ -61,8 +61,8 @@ clean = destripe(
     image,
     adaptive=False,
     directions=[0],
-    mu1=0.33,
-    mu2=0.003,
+    mu1=1 / 3,
+    mu2=1 / 300,
 )
 ```
 

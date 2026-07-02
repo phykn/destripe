@@ -31,10 +31,12 @@ def test_adaptive_constants_live_in_constants_module() -> None:
     from destripe.adaptive import constants, estimate
 
     assert constants.ALL_DIRECTIONS == (0, 1, 2, 3, 4)
-    assert constants.MU1_MIN == 0.10
-    assert constants.MU1_MAX == 0.50
-    assert constants.MU2_MIN == 0.0017
-    assert constants.MU2_MAX == 0.017
+    assert constants.MU1_DENOMINATORS == (6, 5, 4, 3, 2)
+    assert constants.MU2_DENOMINATORS == (300, 240, 180, 120, 100, 90, 60)
+    assert constants.MU1_MIN == 1 / 6
+    assert constants.MU1_MAX == 1 / 2
+    assert constants.MU2_MIN == 1 / 300
+    assert constants.MU2_MAX == 1 / 60
     assert constants.EPS == 1e-9
     assert not hasattr(estimate, "MU1_MIN")
     assert not hasattr(estimate, "_MU1_MIN")
@@ -128,8 +130,12 @@ def test_adaptive_direction_names_describe_their_inputs_and_roles() -> None:
     assert "def _measure_entropy(" in strength_source
     assert "def _distribution_concentration(" not in strength_source
     assert "def _distribution_entropy(" not in strength_source
-    assert "def _fit_cost_boundary(" in strength_source
+    assert "def _snap_log(" in strength_source
+    assert "def _fit_cost_boundary(" not in strength_source
     assert "def _fit_boundary(" not in strength_source
+    assert "parallel_cost" not in strength_source
+    assert "tv_cost" not in strength_source
+    assert "stripe_amp, parallel_cost" not in strength_source
     assert "def _average_weighted(" in strength_source
     assert "def _weighted_mean(" not in strength_source
 
@@ -146,8 +152,8 @@ def test_adaptive_refine_and_stripe_names_are_short_verbs() -> None:
     assert "def project(" in stripe_source
     assert "def measure_shrinkage(" in stripe_source
     assert "def measure_reliability(" not in stripe_source
-    assert "def measure_parallel(" in stripe_source
-    assert "def measure_tv(" in stripe_source
+    assert "def measure_parallel(" not in stripe_source
+    assert "def measure_tv(" not in stripe_source
     assert "def stripe_image(" not in stripe_source
     assert "def parallel_cost(" not in stripe_source
     assert "def tv_cost(" not in stripe_source

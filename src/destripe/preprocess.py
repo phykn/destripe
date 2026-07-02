@@ -70,4 +70,4 @@ def resize_to_shape(
 def _scale_dim(dim: int, scale: float) -> int:
     if dim <= 1:
         return dim
-    return max(2, int(np.floor(dim * scale + 0.5)))
+    return max(2, int(np.floor(dim * scale + 1 / 2)))

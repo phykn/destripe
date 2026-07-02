@@ -73,8 +73,8 @@ def destripe(
             stacklevel=2,
         )
 
-    effective_mu1 = 0.33 if adaptive or mu1 is None else mu1
-    effective_mu2 = 0.003 if adaptive or mu2 is None else mu2
+    effective_mu1 = 1 / 3 if adaptive or mu1 is None else mu1
+    effective_mu2 = 1 / 300 if adaptive or mu2 is None else mu2
     effective_directions = None if adaptive else directions
 
     orig_dtype = input_array.dtype
