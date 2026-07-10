@@ -16,7 +16,7 @@ from benchmarks.synthetic import (
     run_benchmark,
     structural_similarity,
 )
-from destripe.adaptive.constants import PARALLEL_OFFSETS
+from destripe.automatic import PARALLEL_OFFSETS
 
 
 @pytest.mark.parametrize("mode", range(5))
