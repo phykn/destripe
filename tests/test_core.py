@@ -1,4 +1,5 @@
 import inspect
+import warnings
 
 import numpy as np
 import pytest
@@ -8,6 +9,7 @@ import destripe.ops as destripe_ops
 from destripe import preprocess
 from destripe import UniversalStripeRemover, destripe
 from destripe.core import operators
+from destripe.core.result import StripeResult
 
 
 @pytest.fixture()
@@ -193,6 +195,37 @@ class TestProcess:
         assert torch.equal(result, img)
 
 
+@pytest.mark.parametrize("tiles", [1, 2])
+def test_process_tiled_components_reconstructs_input(tiles: int) -> None:
+    remover = UniversalStripeRemover(device="cpu", directions=[0, 2])
+    image = torch.rand((32, 36), generator=torch.Generator().manual_seed(92))
+
+    result = remover.process_tiled_components(
+        image=image,
+        tiles=tiles,
+        overlap=4,
+        iterations=8,
+        proj=False,
+    )
+
+    assert result.clean.shape == image.shape
+    assert len(result.components) == 2
+    assert all(component.shape == image.shape for component in result.components)
+    reconstructed = result.clean + torch.stack(result.components).sum(dim=0)
+    assert torch.allclose(reconstructed, image, atol=2e-5, rtol=2e-5)
+
+
+def test_process_tiled_components_handles_tiny_image() -> None:
+    remover = UniversalStripeRemover(device="cpu", directions=[0, 3])
+    image = torch.rand((1, 8), generator=torch.Generator().manual_seed(93))
+
+    result = remover.process_tiled_components(image=image, tiles=3, iterations=1)
+
+    assert torch.equal(result.clean, image)
+    assert len(result.components) == 2
+    assert all(torch.count_nonzero(component) == 0 for component in result.components)
+
+
 class TestProcessTiled:
     def test_tiles_1_fallback(self, remover: UniversalStripeRemover) -> None:
         img = torch.rand(32, 32)
@@ -234,6 +267,161 @@ class TestProcessTiled:
                 tiles=2,
                 overlap=overlap,  # type: ignore[arg-type]
             )
+
+    def test_tile_mus_length_error_restores_mus(
+        self, remover: UniversalStripeRemover
+    ) -> None:
+        original_mu1, original_mu2 = remover.mu1, remover.mu2
+
+        with pytest.raises(ValueError, match="tile_mus"):
+            remover.process_tiled(
+                image=torch.rand(8, 8),
+                tiles=2,
+                iterations=1,
+                overlap=0,
+                tile_mus=[(1 / 6, 1 / 300)],
+            )
+
+        assert remover.mu1 == original_mu1
+        assert remover.mu2 == original_mu2
+
+    @pytest.mark.parametrize(
+        "tile_mus",
+        [
+            [1 / 6, 1 / 300, 1 / 5, 1 / 240],
+            [(1 / 6, 1 / 300, 1 / 5)] * 4,
+            [("bad", 1 / 300)] * 4,
+            [(True, 1 / 300)] * 4,
+            [(np.nan, 1 / 300)] * 4,
+            [(0.1, np.inf)] * 4,
+            [(0.0, 1 / 300)] * 4,
+            [(-0.1, 1 / 300)] * 4,
+        ],
+    )
+    def test_malformed_tile_mus_raise_value_error(
+        self,
+        remover: UniversalStripeRemover,
+        tile_mus: object,
+    ) -> None:
+        with pytest.raises(ValueError, match="tile_mus"):
+            remover.process_tiled(
+                image=torch.rand(8, 8),
+                tiles=2,
+                iterations=1,
+                overlap=0,
+                tile_mus=tile_mus,  # type: ignore[arg-type]
+            )
+
+    def test_tile_mus_validated_when_tiles_one(
+        self,
+        remover: UniversalStripeRemover,
+    ) -> None:
+        with pytest.raises(ValueError, match="tile_mus"):
+            remover.process_tiled(
+                image=torch.rand(8, 8),
+                tiles=1,
+                iterations=1,
+                tile_mus=[(np.nan, 1 / 300)],
+            )
+
+    @pytest.mark.parametrize(
+        ("shape", "tile_mus"),
+        [
+            ((1, 8), [(float("nan"), 0.1)] * 16),
+            ((3, 8), [0.1] * 16),
+            ((3, 8), [(True, 0.1)] * 16),
+        ],
+    )
+    def test_malformed_tile_mus_raise_on_fallback_dimensions(
+        self,
+        remover: UniversalStripeRemover,
+        shape: tuple[int, int],
+        tile_mus: object,
+    ) -> None:
+        with pytest.raises(ValueError, match="tile_mus"):
+            remover.process_tiled(
+                image=torch.rand(shape),
+                tiles=4,
+                iterations=1,
+                overlap=0,
+                tile_mus=tile_mus,  # type: ignore[arg-type]
+            )
+
+    def test_tile_mus_restore_after_tile_processing_error(
+        self,
+        remover: UniversalStripeRemover,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        original_mu1, original_mu2 = remover.mu1, remover.mu2
+
+        def fail_solve(**_: object) -> StripeResult:
+            raise RuntimeError("forced tile failure")
+
+        monkeypatch.setattr(remover, "_solve", fail_solve)
+
+        with pytest.raises(RuntimeError, match="forced tile failure"):
+            remover.process_tiled(
+                image=torch.rand(8, 8),
+                tiles=2,
+                iterations=1,
+                overlap=0,
+                tile_mus=[(1 / 6, 1 / 300)] * 4,
+            )
+
+        assert remover.mu1 == original_mu1
+        assert remover.mu2 == original_mu2
+
+    def test_tile_mus_processes_tiles_in_one_batch(
+        self,
+        remover: UniversalStripeRemover,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        calls: list[dict[str, object]] = []
+
+        def fake_solve(**kwargs: object) -> StripeResult:
+            data = kwargs["data"]
+            mu1 = kwargs.get("mu1")
+            mu2 = kwargs.get("mu2")
+            assert isinstance(data, torch.Tensor)
+            assert isinstance(mu1, torch.Tensor)
+            assert isinstance(mu2, torch.Tensor)
+            calls.append(
+                {
+                    "shape": tuple(data.shape),
+                    "mu1": mu1.detach().cpu().clone(),
+                    "mu2": mu2.detach().cpu().clone(),
+                }
+            )
+            return StripeResult(clean=data.cpu(), components=())
+
+        monkeypatch.setattr(remover, "_solve", fake_solve)
+
+        tile_mus = [
+            (1 / 6, 1 / 300),
+            (1 / 5, 1 / 240),
+            (1 / 4, 1 / 180),
+            (1 / 3, 1 / 60),
+        ]
+        result = remover.process_tiled(
+            image=torch.rand(8, 8),
+            tiles=2,
+            iterations=1,
+            overlap=0,
+            tile_mus=tile_mus,
+        )
+
+        assert result.shape == (8, 8)
+        assert len(calls) == 1
+        assert calls[0]["shape"][0] == 4
+        assert torch.allclose(
+            calls[0]["mu1"].reshape(-1),
+            torch.tensor([1 / 6, 1 / 5, 1 / 4, 1 / 3]),
+        )
+        assert torch.allclose(
+            calls[0]["mu2"].reshape(-1),
+            torch.tensor([1 / 300, 1 / 240, 1 / 180, 1 / 60]),
+        )
+
 
 class TestDestripe:
     def test_destripe_has_only_automatic_options(self) -> None:
@@ -302,6 +490,94 @@ class TestDestripe:
         }
         assert result.dtype == image.dtype
         assert np.allclose(result, image)
+
+    @pytest.mark.parametrize(
+        ("dtype", "values"),
+        [
+            (
+                np.int64,
+                (np.iinfo(np.int64).min, np.iinfo(np.int64).max),
+            ),
+            (
+                np.uint64,
+                (np.iinfo(np.uint64).min, np.iinfo(np.uint64).max),
+            ),
+        ],
+    )
+    def test_identity_correction_preserves_64_bit_integer_endpoints_without_warning(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        dtype: type[np.integer],
+        values: tuple[int, int],
+    ) -> None:
+        def fake_automatic_clean(gray: np.ndarray, *, proj: bool) -> object:
+            return type("Result", (), {"clean": gray.copy()})()
+
+        monkeypatch.setattr(destripe_ops, "automatic_clean", fake_automatic_clean)
+        image = np.array([values, values], dtype=dtype)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            result = destripe(image)
+
+        assert result.dtype == image.dtype
+        assert np.array_equal(result, image)
+
+    @pytest.mark.parametrize("dtype", [np.int64, np.uint64])
+    def test_nonzero_correction_does_not_wrap_64_bit_integer_maximum(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        dtype: type[np.integer],
+    ) -> None:
+        info = np.iinfo(dtype)
+
+        def fake_automatic_clean(gray: np.ndarray, *, proj: bool) -> object:
+            clean = gray.copy()
+            clean[1, 0] = max(0.0, clean[1, 0] - 0.1)
+            return type("Result", (), {"clean": clean})()
+
+        monkeypatch.setattr(destripe_ops, "automatic_clean", fake_automatic_clean)
+        image = np.array(
+            [[info.min, info.max], [info.max // 2, info.min]],
+            dtype=dtype,
+        )
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            result = destripe(image)
+
+        assert result[0, 1] == info.max
+        assert result[0, 1] != info.min
+
+    def test_cross_zero_extreme_float_range_has_finite_normalization_and_inverse(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        seen: dict[str, float] = {}
+
+        def fake_automatic_clean(gray: np.ndarray, *, proj: bool) -> object:
+            assert np.isfinite(gray).all()
+            seen["minimum"] = float(gray.min())
+            seen["maximum"] = float(gray.max())
+            clean = gray.copy()
+            clean[1, 0] -= 0.1
+            return type("Result", (), {"clean": clean})()
+
+        monkeypatch.setattr(destripe_ops, "automatic_clean", fake_automatic_clean)
+        image = np.array(
+            [[-1e308, 1e308], [-5e307, 5e307]],
+            dtype=np.float64,
+        )
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            result = destripe(image)
+
+        assert seen == {"minimum": 0.0, "maximum": 1.0}
+        assert np.isfinite(result).all()
+        assert result[0, 0] == image[0, 0]
+        assert result[0, 1] == image[0, 1]
+        assert result[1, 0] == pytest.approx(-7e307)
 
     def test_grayscale_float64(self, gray_image: np.ndarray) -> None:
         result = destripe(gray_image)

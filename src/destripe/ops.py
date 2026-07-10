@@ -54,7 +54,17 @@ def destripe(
     intensity_scale = max_value - min_value
     if intensity_scale < 1e-12:
         return input_array.copy()
-    normalized = (normalized - min_value) / intensity_scale
+    restore_magnitude: float | None = None
+    restore_offset = min_value
+    restore_scale = intensity_scale
+    if np.isfinite(intensity_scale):
+        normalized = (normalized - min_value) / intensity_scale
+    else:
+        restore_magnitude = max(abs(min_value), abs(max_value))
+        scaled = normalized / restore_magnitude
+        restore_offset = min_value / restore_magnitude
+        restore_scale = max_value / restore_magnitude - restore_offset
+        normalized = (scaled - restore_offset) / restore_scale
 
     if normalized.ndim == 2:
         gray = normalized
@@ -71,6 +81,8 @@ def destripe(
     correction = processed_gray - automatic_result.clean
     if processed_gray.shape != gray.shape:
         correction = resize_to_shape(correction, shape=gray.shape)
+    if not np.any(correction):
+        return input_array.copy()
 
     if normalized.ndim == 2:
         clean = gray - correction
@@ -79,8 +91,24 @@ def destripe(
     if proj:
         clean = np.clip(clean, 0.0, 1.0)
 
-    result = clean * intensity_scale + min_value
+    result = clean * restore_scale + restore_offset
+    if restore_magnitude is not None:
+        result *= restore_magnitude
     if np.issubdtype(orig_dtype, np.integer):
-        info = np.iinfo(orig_dtype)
-        result = np.clip(result, info.min, info.max)
+        return _restore_integer(result, dtype=orig_dtype)
     return result.astype(orig_dtype)
+
+
+def _restore_integer(result: np.ndarray, *, dtype: np.dtype) -> np.ndarray:
+    info = np.iinfo(dtype)
+    values = np.asarray(result, dtype=np.float64)
+    lower_bound = float(info.min)
+    upper_bound = float(info.max)
+    lower_endpoint = values <= lower_bound
+    upper_endpoint = values >= upper_bound
+    safe_upper = np.nextafter(upper_bound, -np.inf)
+    safe = np.clip(values, lower_bound, safe_upper)
+    restored = safe.astype(dtype)
+    restored[lower_endpoint] = info.min
+    restored[upper_endpoint] = info.max
+    return restored
