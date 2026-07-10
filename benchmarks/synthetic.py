@@ -8,17 +8,22 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from benchmarks.acceptance import evaluate_acceptance
 from destripe import destripe
 from destripe.adaptive import AdaptiveParams, estimate_adaptive_params
 from destripe.adaptive.constants import PARALLEL_OFFSETS
 
 
 RESULT_FIELDS = (
+    "seed",
     "sample",
     "case_type",
     "pattern",
     "mode",
     "strength",
+    "carrier",
+    "profile_scale",
+    "angle_offset",
     "level",
     "selected_directions",
     "mu1",
@@ -44,17 +49,44 @@ class BenchmarkImage:
 class PatternSpec:
     kind: str
     mode: int
+    carrier: str = "additive"
+    profile_scale: int = 9
+    angle_offset: float = 0.0
 
     @property
     def name(self) -> str:
-        return f"{self.kind}_m{self.mode}"
+        parts = [self.kind]
+        if self.profile_scale == 3:
+            parts.append("narrow")
+        elif self.profile_scale == 15:
+            parts.append("broad")
+        elif self.profile_scale != 9:
+            parts.append(f"scale{self.profile_scale}")
+        if self.carrier != "additive":
+            parts.append(self.carrier)
+        if self.angle_offset != 0.0:
+            parts.append("offgrid")
+        return f"{'_'.join(parts)}_m{self.mode}"
 
 
 def default_pattern_specs() -> tuple[PatternSpec, ...]:
-    return tuple(PatternSpec(kind="curtain", mode=mode) for mode in range(5)) + (
+    canonical = tuple(
+        PatternSpec(kind="curtain", mode=mode) for mode in range(5)
+    ) + (
         PatternSpec(kind="sparse", mode=0),
         PatternSpec(kind="nonstationary", mode=0),
     )
+    robustness = (
+        PatternSpec(kind="curtain", mode=0, profile_scale=3),
+        PatternSpec(kind="curtain", mode=0, profile_scale=15),
+    ) + tuple(
+        PatternSpec(kind="curtain", mode=mode, carrier="multiplicative")
+        for mode in range(5)
+    ) + tuple(
+        PatternSpec(kind="curtain", mode=mode, angle_offset=7.5)
+        for mode in range(5)
+    )
+    return canonical + robustness
 
 
 def make_stripe_pattern(
@@ -63,6 +95,8 @@ def make_stripe_pattern(
     kind: str,
     mode: int,
     rng: np.random.Generator,
+    profile_scale: int = 9,
+    angle_offset: float = 0.0,
 ) -> np.ndarray:
     if len(shape) != 2 or min(shape) < 2:
         raise ValueError("shape must contain two dimensions of at least 2 pixels.")
@@ -70,12 +104,36 @@ def make_stripe_pattern(
         raise ValueError("mode must be an integer from 0 through 4.")
     if kind not in {"curtain", "sparse", "nonstationary"}:
         raise ValueError("kind must be curtain, sparse, or nonstationary.")
+    if not isinstance(profile_scale, int) or profile_scale <= 0:
+        raise ValueError("profile_scale must be a positive integer.")
+    if not np.isfinite(angle_offset):
+        raise ValueError("angle_offset must be finite.")
 
     rows, cols = np.indices(shape, dtype=np.int64)
     row_step, col_step = PARALLEL_OFFSETS[mode]
-    line_ids = col_step * rows - row_step * cols
-    shifted_ids = line_ids - int(line_ids.min())
-    line_count = int(shifted_ids.max()) + 1
+    shifted_ids: np.ndarray | None
+    continuous_coordinates: np.ndarray | None
+    if angle_offset == 0.0:
+        line_ids = col_step * rows - row_step * cols
+        shifted_ids = line_ids - int(line_ids.min())
+        continuous_coordinates = None
+        line_count = int(shifted_ids.max()) + 1
+    else:
+        normal = np.array([col_step, -row_step], dtype=np.float64)
+        normal /= np.linalg.norm(normal)
+        angle = np.deg2rad(angle_offset)
+        cosine = float(np.cos(angle))
+        sine = float(np.sin(angle))
+        rotated_normal = np.array(
+            [
+                cosine * normal[0] - sine * normal[1],
+                sine * normal[0] + cosine * normal[1],
+            ]
+        )
+        coordinates = rotated_normal[0] * rows + rotated_normal[1] * cols
+        continuous_coordinates = coordinates - float(coordinates.min())
+        shifted_ids = None
+        line_count = int(np.ceil(continuous_coordinates.max())) + 1
 
     profile = rng.normal(size=line_count)
     if kind == "sparse":
@@ -88,13 +146,21 @@ def make_stripe_pattern(
         sparse_profile[selected] = profile[selected]
         profile = sparse_profile
     else:
-        kernel_size = min(9, line_count)
+        kernel_size = min(profile_scale, line_count)
         if kernel_size % 2 == 0:
             kernel_size -= 1
         kernel = np.ones(kernel_size, dtype=np.float64) / kernel_size
         profile = np.convolve(profile, kernel, mode="same")
 
-    pattern = profile[shifted_ids]
+    if continuous_coordinates is None:
+        assert shifted_ids is not None
+        pattern = profile[shifted_ids]
+    else:
+        pattern = np.interp(
+            continuous_coordinates,
+            np.arange(line_count, dtype=np.float64),
+            profile,
+        )
     if kind == "nonstationary":
         envelope = 0.2 + 0.8 * np.sin(
             np.pi * (rows + 0.5) / shape[0]
@@ -146,6 +212,7 @@ def inject_stripe(
     pattern: np.ndarray,
     *,
     strength: float,
+    carrier: str = "additive",
 ) -> tuple[np.ndarray, np.ndarray]:
     clean_array = np.asarray(clean, dtype=np.float64)
     pattern_array = np.asarray(pattern, dtype=np.float64)
@@ -153,7 +220,13 @@ def inject_stripe(
         raise ValueError("clean and pattern must have the same shape.")
     if not np.isfinite(strength) or strength <= 0:
         raise ValueError("strength must be a positive finite number.")
-    observed = np.clip(clean_array + strength * pattern_array, 0.0, 1.0)
+    if carrier == "additive":
+        proposed = clean_array + strength * pattern_array
+    elif carrier == "multiplicative":
+        proposed = clean_array * (1.0 + strength * pattern_array)
+    else:
+        raise ValueError("carrier must be additive or multiplicative.")
+    observed = np.clip(proposed, 0.0, 1.0)
     return observed, observed - clean_array
 
 
@@ -205,11 +278,15 @@ def run_benchmark(
                 )
                 rows.append(
                     _make_row(
+                        seed=seed,
                         sample=sample.name,
                         case_type="real",
                         pattern="existing",
                         mode=None,
                         strength=None,
+                        carrier="additive",
+                        profile_scale=9,
+                        angle_offset=0.0,
                         level=level,
                         params=params,
                         input_psnr=None,
@@ -222,6 +299,37 @@ def run_benchmark(
                 )
             continue
 
+        for level in levels:
+            params = estimate_adaptive_params(sample.image, level=level)
+            output = destripe(
+                sample.image,
+                adaptive=level,
+                iterations=iterations,
+                process_size=process_size,
+                device=device,
+            )
+            rows.append(
+                _make_row(
+                    seed=seed,
+                    sample=sample.name,
+                    case_type="clean",
+                    pattern="none",
+                    mode=None,
+                    strength=0.0,
+                    carrier="additive",
+                    profile_scale=9,
+                    angle_offset=0.0,
+                    level=level,
+                    params=params,
+                    input_psnr=math.inf,
+                    output_psnr=_psnr(sample.image, output),
+                    input_ssim=1.0,
+                    output_ssim=structural_similarity(sample.image, output),
+                    stripe_projection_left_pct=0.0,
+                    removed_rmse=_rmse(sample.image, output),
+                )
+            )
+
         for pattern_index, spec in enumerate(pattern_specs):
             for strength_index, strength in enumerate(strengths):
                 rng = np.random.default_rng(
@@ -232,11 +340,14 @@ def run_benchmark(
                     kind=spec.kind,
                     mode=spec.mode,
                     rng=rng,
+                    profile_scale=spec.profile_scale,
+                    angle_offset=spec.angle_offset,
                 )
                 observed, actual_stripe = inject_stripe(
                     sample.image,
                     pattern,
                     strength=strength,
+                    carrier=spec.carrier,
                 )
                 for level in levels:
                     params = estimate_adaptive_params(observed, level=level)
@@ -249,11 +360,15 @@ def run_benchmark(
                     )
                     rows.append(
                         _make_row(
+                            seed=seed,
                             sample=sample.name,
                             case_type="synthetic",
                             pattern=spec.name,
                             mode=spec.mode,
                             strength=strength,
+                            carrier=spec.carrier,
+                            profile_scale=spec.profile_scale,
+                            angle_offset=spec.angle_offset,
                             level=level,
                             params=params,
                             input_psnr=_psnr(sample.image, observed),
@@ -273,11 +388,15 @@ def run_benchmark(
 
 def _make_row(
     *,
+    seed: int,
     sample: str,
     case_type: str,
     pattern: str,
     mode: int | None,
     strength: float | None,
+    carrier: str,
+    profile_scale: int,
+    angle_offset: float,
     level: int,
     params: AdaptiveParams,
     input_psnr: float | None,
@@ -288,11 +407,15 @@ def _make_row(
     removed_rmse: float,
 ) -> dict[str, object]:
     return {
+        "seed": seed,
         "sample": sample,
         "case_type": case_type,
         "pattern": pattern,
         "mode": mode,
         "strength": strength,
+        "carrier": carrier,
+        "profile_scale": profile_scale,
+        "angle_offset": angle_offset,
         "level": level,
         "selected_directions": params.directions,
         "mu1": params.mu1,
@@ -374,6 +497,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--process-size", type=int, default=256)
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--check-acceptance", action="store_true")
     args = parser.parse_args(argv)
 
     rows = run_benchmark(
@@ -388,10 +512,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     write_results(args.output, rows)
     real_count = sum(row["case_type"] == "real" for row in rows)
+    clean_count = sum(row["case_type"] == "clean" for row in rows)
+    synthetic_count = sum(row["case_type"] == "synthetic" for row in rows)
     print(
         f"Wrote {len(rows)} rows to {args.output} "
-        f"({real_count} real-only, {len(rows) - real_count} synthetic)."
+        f"({real_count} real-only, {clean_count} clean, "
+        f"{synthetic_count} synthetic)."
     )
+    if args.check_acceptance:
+        failures = evaluate_acceptance(rows)
+        for failure in failures:
+            print(f"acceptance: {failure}")
+        return 1 if failures else 0
     return 0
 
 

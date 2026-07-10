@@ -1,3 +1,5 @@
+import csv
+import hashlib
 from pathlib import Path
 
 import cv2
@@ -75,6 +77,87 @@ def test_inject_stripe_reports_clipped_actual_delta() -> None:
     assert np.allclose(actual, observed - clean)
 
 
+def test_multiplicative_injection_reports_actual_stripe() -> None:
+    clean = np.full((12, 14), 0.5)
+    pattern = np.tile(np.linspace(-1, 1, 14), (12, 1))
+    observed, actual = inject_stripe(
+        clean, pattern, strength=0.02, carrier="multiplicative"
+    )
+    assert np.allclose(actual, observed - clean)
+    assert not np.allclose(actual, 0.02 * pattern)
+
+
+def make_acceptance_fixture(
+    *,
+    weak_projection_left: float,
+    clean_psnr: float,
+) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    samples = [f"sample_{index:02d}.png" for index in range(2, 6)]
+    for sample in samples:
+        rows.append(
+            {
+                "seed": 1234,
+                "sample": sample,
+                "case_type": "clean",
+                "pattern": "none",
+                "mode": None,
+                "strength": 0.0,
+                "carrier": "additive",
+                "profile_scale": 9,
+                "angle_offset": 0.0,
+                "input_psnr": float("inf"),
+                "output_psnr": clean_psnr,
+                "input_ssim": 1.0,
+                "output_ssim": 1.0,
+                "stripe_projection_left_pct": 0.0,
+            }
+        )
+        for mode in range(5):
+            for strength, psnr_gain, ssim_gain in (
+                (0.01, 0.2, 0.002),
+                (0.03, 1.0, 0.003),
+                (0.06, 4.0, 0.004),
+            ):
+                rows.append(
+                    {
+                        "seed": 1234,
+                        "sample": sample,
+                        "case_type": "synthetic",
+                        "pattern": f"curtain_m{mode}",
+                        "mode": mode,
+                        "strength": strength,
+                        "carrier": "additive",
+                        "profile_scale": 9,
+                        "angle_offset": 0.0,
+                        "input_psnr": 40.0,
+                        "output_psnr": 40.0 + psnr_gain,
+                        "input_ssim": 0.95,
+                        "output_ssim": 0.95 + ssim_gain,
+                        "stripe_projection_left_pct": (
+                            weak_projection_left if strength == 0.01 else 50.0
+                        ),
+                    }
+                )
+    return rows
+
+
+def test_acceptance_rejects_noop_weak_rows() -> None:
+    from benchmarks.acceptance import evaluate_acceptance
+
+    rows = make_acceptance_fixture(weak_projection_left=100.0, clean_psnr=100.0)
+    failures = evaluate_acceptance(rows)
+    assert any("projection" in failure for failure in failures)
+
+
+def test_acceptance_rejects_clean_fidelity_below_absolute_gate() -> None:
+    from benchmarks.acceptance import evaluate_acceptance
+
+    rows = make_acceptance_fixture(weak_projection_left=60.0, clean_psnr=39.9)
+    failures = evaluate_acceptance(rows)
+    assert any("clean PSNR" in failure for failure in failures)
+
+
 def test_structural_similarity_is_one_for_identical_images() -> None:
     image = np.random.default_rng(5).random((32, 32))
 
@@ -84,15 +167,99 @@ def test_structural_similarity_is_one_for_identical_images() -> None:
 def test_default_patterns_cover_all_directions_and_two_vertical_guards() -> None:
     specs = default_pattern_specs()
 
-    assert [(spec.kind, spec.mode) for spec in specs] == [
-        ("curtain", 0),
-        ("curtain", 1),
-        ("curtain", 2),
-        ("curtain", 3),
-        ("curtain", 4),
-        ("sparse", 0),
-        ("nonstationary", 0),
+    assert [
+        (
+            spec.name,
+            spec.kind,
+            spec.mode,
+            spec.carrier,
+            spec.profile_scale,
+            spec.angle_offset,
+        )
+        for spec in specs
+    ] == [
+        ("curtain_m0", "curtain", 0, "additive", 9, 0.0),
+        ("curtain_m1", "curtain", 1, "additive", 9, 0.0),
+        ("curtain_m2", "curtain", 2, "additive", 9, 0.0),
+        ("curtain_m3", "curtain", 3, "additive", 9, 0.0),
+        ("curtain_m4", "curtain", 4, "additive", 9, 0.0),
+        ("sparse_m0", "sparse", 0, "additive", 9, 0.0),
+        ("nonstationary_m0", "nonstationary", 0, "additive", 9, 0.0),
+        ("curtain_narrow_m0", "curtain", 0, "additive", 3, 0.0),
+        ("curtain_broad_m0", "curtain", 0, "additive", 15, 0.0),
+        ("curtain_multiplicative_m0", "curtain", 0, "multiplicative", 9, 0.0),
+        ("curtain_multiplicative_m1", "curtain", 1, "multiplicative", 9, 0.0),
+        ("curtain_multiplicative_m2", "curtain", 2, "multiplicative", 9, 0.0),
+        ("curtain_multiplicative_m3", "curtain", 3, "multiplicative", 9, 0.0),
+        ("curtain_multiplicative_m4", "curtain", 4, "multiplicative", 9, 0.0),
+        ("curtain_offgrid_m0", "curtain", 0, "additive", 9, 7.5),
+        ("curtain_offgrid_m1", "curtain", 1, "additive", 9, 7.5),
+        ("curtain_offgrid_m2", "curtain", 2, "additive", 9, 7.5),
+        ("curtain_offgrid_m3", "curtain", 3, "additive", 9, 7.5),
+        ("curtain_offgrid_m4", "curtain", 4, "additive", 9, 7.5),
     ]
+
+
+def test_seed_1234_canonical_pattern_bytes_remain_compatible() -> None:
+    expected_hashes = {
+        "curtain_m0": "da03ba59da31f251370cf5f7d450b84fea3dbc7c498f5fc5d4ac44f3fb45885e",
+        "curtain_m1": "096e01b4781a91b57cac3f0d4fd886bc10db6d419894af0b0b7184eb3fd6fa68",
+        "curtain_m2": "8113b899b55f360846c5c99e83f798945ed87e434c50f332e17585ea303d0d40",
+        "curtain_m3": "110e96fbaa45ccfa4f0f05d3d32101b8ac46dd89504f44ebf22da698e6991576",
+        "curtain_m4": "bc67c65f1d32f75a27d913017e320962f6991b9f42a67b6d473cd8a09a88f30a",
+        "sparse_m0": "ff38d52c8bf2dc96fef9d2cd3afd0e1d4021615a8471b0b3f3c0fe39552ee274",
+        "nonstationary_m0": "7a053650f96161a878a648ac695aa9a1b9d74d417d38d85324bf05fd93db827a",
+    }
+
+    actual_hashes = {}
+    for spec in default_pattern_specs()[:7]:
+        pattern = make_stripe_pattern(
+            shape=(33, 35),
+            kind=spec.kind,
+            mode=spec.mode,
+            rng=np.random.default_rng(1234),
+            profile_scale=spec.profile_scale,
+            angle_offset=spec.angle_offset,
+        )
+        actual_hashes[spec.name] = hashlib.sha256(pattern.tobytes()).hexdigest()
+
+    assert actual_hashes == expected_hashes
+
+
+def test_offgrid_and_profile_scale_variants_change_pattern_geometry() -> None:
+    canonical = make_stripe_pattern(
+        shape=(33, 35),
+        kind="curtain",
+        mode=0,
+        rng=np.random.default_rng(1234),
+    )
+    narrow = make_stripe_pattern(
+        shape=(33, 35),
+        kind="curtain",
+        mode=0,
+        rng=np.random.default_rng(1234),
+        profile_scale=3,
+    )
+    broad = make_stripe_pattern(
+        shape=(33, 35),
+        kind="curtain",
+        mode=0,
+        rng=np.random.default_rng(1234),
+        profile_scale=15,
+    )
+    offgrid = make_stripe_pattern(
+        shape=(33, 35),
+        kind="curtain",
+        mode=0,
+        rng=np.random.default_rng(1234),
+        angle_offset=7.5,
+    )
+
+    assert not np.allclose(narrow, canonical)
+    assert not np.allclose(broad, canonical)
+    assert not np.allclose(offgrid, canonical)
+    assert float(offgrid.mean()) == pytest.approx(0.0, abs=1e-12)
+    assert float(offgrid.std()) == pytest.approx(1.0)
 
 
 def test_run_benchmark_keeps_real_stripe_sample_out_of_gt_metrics(
@@ -119,17 +286,35 @@ def test_run_benchmark_keeps_real_stripe_sample_out_of_gt_metrics(
         device="cpu",
     )
 
-    assert len(rows) == 5
+    assert len(rows) == 9
     real = rows[0]
     assert real["sample"] == "sample_01.jpeg"
     assert real["case_type"] == "real"
     assert real["pattern"] == "existing"
+    assert real["seed"] == 17
+    assert real["carrier"] == "additive"
+    assert real["profile_scale"] == 9
+    assert real["angle_offset"] == 0.0
     assert real["input_psnr"] is None
     assert real["output_psnr"] is None
     assert real["input_ssim"] is None
     assert real["output_ssim"] is None
 
-    synthetic = rows[1:]
+    clean = [row for row in rows if row["case_type"] == "clean"]
+    assert {row["sample"] for row in clean} == {
+        "sample_02.png",
+        "sample_03.png",
+        "sample_04.png",
+        "sample_05.png",
+    }
+    assert all(row["pattern"] == "none" for row in clean)
+    assert all(row["strength"] == 0.0 for row in clean)
+    assert all(row["input_psnr"] == float("inf") for row in clean)
+    assert all(row["input_ssim"] == pytest.approx(1.0) for row in clean)
+    assert all(row["output_psnr"] is not None for row in clean)
+    assert all(row["output_ssim"] is not None for row in clean)
+
+    synthetic = [row for row in rows if row["case_type"] == "synthetic"]
     assert {row["sample"] for row in synthetic} == {
         "sample_02.png",
         "sample_03.png",
@@ -141,6 +326,10 @@ def test_run_benchmark_keeps_real_stripe_sample_out_of_gt_metrics(
     assert all(row["output_psnr"] is not None for row in synthetic)
     assert all(row["input_ssim"] is not None for row in synthetic)
     assert all(row["output_ssim"] is not None for row in synthetic)
+    assert all(row["seed"] == 17 for row in synthetic)
+    assert all(row["carrier"] == "additive" for row in synthetic)
+    assert all(row["profile_scale"] == 9 for row in synthetic)
+    assert all(row["angle_offset"] == 0.0 for row in synthetic)
 
 
 def test_cli_writes_csv_without_saving_generated_images(tmp_path: Path) -> None:
@@ -178,6 +367,283 @@ def test_cli_writes_csv_without_saving_generated_images(tmp_path: Path) -> None:
 
     assert result == 0
     lines = output.read_text(encoding="utf-8").splitlines()
-    assert len(lines) == 6
-    assert lines[0].startswith("sample,case_type,pattern,")
+    assert len(lines) == 10
+    with output.open(encoding="utf-8", newline="") as stream:
+        reader = csv.DictReader(stream)
+        assert reader.fieldnames is not None
+        assert {"seed", "carrier", "profile_scale", "angle_offset"} <= set(
+            reader.fieldnames
+        )
     assert not list(tmp_path.rglob("*.tif"))
+
+
+def test_cli_check_acceptance_returns_one_after_writing_failures(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    asset_dir = tmp_path / "asset"
+    asset_dir.mkdir()
+    rng = np.random.default_rng(13)
+    for index in range(1, 6):
+        suffix = ".jpeg" if index == 1 else ".png"
+        image = np.clip(
+            110 + 25 * rng.normal(size=(16, 18)),
+            0,
+            255,
+        ).astype(np.uint8)
+        cv2.imwrite(str(asset_dir / f"sample_{index:02d}{suffix}"), image)
+    output = tmp_path / "results.csv"
+
+    result = main(
+        [
+            "--asset-dir",
+            str(asset_dir),
+            "--output",
+            str(output),
+            "--patterns",
+            "curtain_m0",
+            "--strengths",
+            "0.01",
+            "--levels",
+            "0",
+            "--iterations",
+            "1",
+            "--process-size",
+            "16",
+            "--check-acceptance",
+        ]
+    )
+
+    assert result == 1
+    assert output.exists()
+    assert "acceptance:" in capsys.readouterr().out
+
+
+def _canonical_rows_at(
+    rows: list[dict[str, object]],
+    strength: float,
+) -> list[dict[str, object]]:
+    return [
+        row
+        for row in rows
+        if row["case_type"] == "synthetic" and row["strength"] == strength
+    ]
+
+
+def test_acceptance_passes_complete_canonical_fixture() -> None:
+    from benchmarks.acceptance import evaluate_acceptance
+
+    rows = make_acceptance_fixture(weak_projection_left=60.0, clean_psnr=100.0)
+
+    assert evaluate_acceptance(rows) == []
+
+
+@pytest.mark.parametrize(
+    ("metric", "gain", "message"),
+    [
+        ("output_psnr", 0.09, "weak mean PSNR"),
+        ("output_ssim", 0.0009, "weak mean SSIM"),
+    ],
+)
+def test_acceptance_rejects_low_weak_mean_gain(
+    metric: str,
+    gain: float,
+    message: str,
+) -> None:
+    from benchmarks.acceptance import evaluate_acceptance
+
+    rows = make_acceptance_fixture(weak_projection_left=60.0, clean_psnr=100.0)
+    for row in _canonical_rows_at(rows, 0.01):
+        input_metric = metric.replace("output", "input")
+        row[metric] = float(row[input_metric]) + gain
+
+    assert any(message in failure for failure in evaluate_acceptance(rows))
+
+
+def test_acceptance_rejects_low_weak_case_coverage() -> None:
+    from benchmarks.acceptance import evaluate_acceptance
+
+    rows = make_acceptance_fixture(weak_projection_left=60.0, clean_psnr=100.0)
+    for row in _canonical_rows_at(rows, 0.01)[:6]:
+        row["output_psnr"] = float(row["input_psnr"]) + 0.01
+        row["output_ssim"] = float(row["input_ssim"]) + 0.00001
+
+    assert any("weak coverage" in failure for failure in evaluate_acceptance(rows))
+
+
+def test_acceptance_rejects_any_weak_loss_worse_than_one_db() -> None:
+    from benchmarks.acceptance import evaluate_acceptance
+
+    rows = make_acceptance_fixture(weak_projection_left=60.0, clean_psnr=100.0)
+    weak = _canonical_rows_at(rows, 0.01)
+    weak[0]["output_psnr"] = float(weak[0]["input_psnr"]) - 1.01
+
+    assert any("weak PSNR loss" in failure for failure in evaluate_acceptance(rows))
+
+
+def test_acceptance_rejects_negative_weak_mean_for_supported_direction() -> None:
+    from benchmarks.acceptance import evaluate_acceptance
+
+    rows = make_acceptance_fixture(weak_projection_left=60.0, clean_psnr=100.0)
+    for row in _canonical_rows_at(rows, 0.01):
+        if row["mode"] == 0:
+            row["output_psnr"] = float(row["input_psnr"]) - 0.1
+        else:
+            row["output_psnr"] = float(row["input_psnr"]) + 0.3
+
+    assert any("mode 0" in failure for failure in evaluate_acceptance(rows))
+
+
+def test_acceptance_rejects_low_projection_case_coverage() -> None:
+    from benchmarks.acceptance import evaluate_acceptance
+
+    rows = make_acceptance_fixture(weak_projection_left=60.0, clean_psnr=100.0)
+    for row in _canonical_rows_at(rows, 0.01)[:6]:
+        row["stripe_projection_left_pct"] = 86.0
+
+    failures = evaluate_acceptance(rows)
+    assert any("projection coverage" in failure for failure in failures)
+    assert not any("mean projection" in failure for failure in failures)
+
+
+@pytest.mark.parametrize(
+    ("strength", "gain", "message"),
+    [
+        (0.03, 0.668, "medium mean PSNR"),
+        (0.06, 3.532, "strong mean PSNR"),
+    ],
+)
+def test_acceptance_rejects_canonical_baseline_regression(
+    strength: float,
+    gain: float,
+    message: str,
+) -> None:
+    from benchmarks.acceptance import evaluate_acceptance
+
+    rows = make_acceptance_fixture(weak_projection_left=60.0, clean_psnr=100.0)
+    for row in _canonical_rows_at(rows, strength):
+        row["output_psnr"] = float(row["input_psnr"]) + gain
+
+    assert any(message in failure for failure in evaluate_acceptance(rows))
+
+
+def test_acceptance_rejects_clean_ssim_below_absolute_gate() -> None:
+    from benchmarks.acceptance import evaluate_acceptance
+
+    rows = make_acceptance_fixture(weak_projection_left=60.0, clean_psnr=100.0)
+    clean = next(row for row in rows if row["case_type"] == "clean")
+    clean["output_ssim"] = 0.989
+
+    assert any("clean SSIM" in failure for failure in evaluate_acceptance(rows))
+
+
+def test_acceptance_failure_order_is_independent_of_row_order() -> None:
+    from benchmarks.acceptance import evaluate_acceptance
+
+    rows = make_acceptance_fixture(weak_projection_left=100.0, clean_psnr=39.9)
+
+    assert evaluate_acceptance(rows) == evaluate_acceptance(list(reversed(rows)))
+
+
+@pytest.mark.parametrize(
+    ("omission", "message"),
+    [
+        ("sample", "missing sample"),
+        ("strength", "missing strength"),
+        ("mode", "missing mode"),
+    ],
+)
+def test_acceptance_rejects_incomplete_canonical_matrix(
+    omission: str,
+    message: str,
+) -> None:
+    from benchmarks.acceptance import evaluate_acceptance
+
+    rows = make_acceptance_fixture(weak_projection_left=60.0, clean_psnr=100.0)
+    if omission == "sample":
+        rows = [
+            row
+            for row in rows
+            if not (
+                row["sample"] == "sample_02.png"
+                and row["pattern"] == "curtain_m0"
+                and row["strength"] == 0.01
+            )
+        ]
+    elif omission == "strength":
+        rows = [row for row in rows if row["strength"] != 0.03]
+    else:
+        rows = [
+            row
+            for row in rows
+            if not (row["case_type"] == "synthetic" and row["mode"] == 4)
+        ]
+
+    assert any(message in failure for failure in evaluate_acceptance(rows))
+
+
+def test_acceptance_rejects_nonfinite_synthetic_metric() -> None:
+    from benchmarks.acceptance import evaluate_acceptance
+
+    rows = make_acceptance_fixture(weak_projection_left=60.0, clean_psnr=100.0)
+    synthetic = next(row for row in rows if row["case_type"] == "synthetic")
+    synthetic["output_psnr"] = float("nan")
+
+    assert any("non-finite" in failure for failure in evaluate_acceptance(rows))
+
+
+def _append_robustness_rows(
+    rows: list[dict[str, object]],
+    gains: tuple[float, float, float, float],
+) -> None:
+    for sample, gain in zip(
+        [f"sample_{index:02d}.png" for index in range(2, 6)],
+        gains,
+        strict=True,
+    ):
+        rows.append(
+            {
+                "seed": 1234,
+                "sample": sample,
+                "case_type": "synthetic",
+                "pattern": "curtain_narrow_m0",
+                "mode": 0,
+                "strength": 0.03,
+                "carrier": "additive",
+                "profile_scale": 3,
+                "angle_offset": 0.0,
+                "input_psnr": 40.0,
+                "output_psnr": 40.0 + gain,
+                "input_ssim": 0.95,
+                "output_ssim": 0.95,
+                "stripe_projection_left_pct": 50.0,
+            }
+        )
+
+
+def test_acceptance_does_not_apply_canonical_baseline_to_robustness_rows() -> None:
+    from benchmarks.acceptance import evaluate_acceptance
+
+    rows = make_acceptance_fixture(weak_projection_left=60.0, clean_psnr=100.0)
+    _append_robustness_rows(rows, (0.0, 0.0, 0.0, 0.0))
+
+    assert evaluate_acceptance(rows) == []
+
+
+@pytest.mark.parametrize(
+    ("gains", "message"),
+    [
+        ((-0.1, -0.1, -0.1, -0.1), "robustness mean PSNR"),
+        ((-1.1, 0.4, 0.4, 0.4), "robustness PSNR loss"),
+    ],
+)
+def test_acceptance_rejects_robustness_regression(
+    gains: tuple[float, float, float, float],
+    message: str,
+) -> None:
+    from benchmarks.acceptance import evaluate_acceptance
+
+    rows = make_acceptance_fixture(weak_projection_left=60.0, clean_psnr=100.0)
+    _append_robustness_rows(rows, gains)
+
+    assert any(message in failure for failure in evaluate_acceptance(rows))
