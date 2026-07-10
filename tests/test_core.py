@@ -693,6 +693,32 @@ class TestAdaptiveEstimator:
         assert np.all(smoothed[..., 1] <= constants.MU2_MAX)
 
 
+def test_robust_projection_ignores_protected_local_structure() -> None:
+    from destripe.adaptive.stripe import project_robust
+
+    tensor = torch.zeros((32, 12), dtype=torch.float32)
+    tensor[:, 5] = 0.02
+    tensor[10:14, 5] = 1.0
+    weights = torch.ones_like(tensor)
+    weights[9:15, 5] = 0.0
+
+    projected = project_robust(tensor, mode=0, weights=weights)
+
+    assert torch.allclose(projected[:, 5], torch.full((32,), 0.02), atol=1e-4)
+
+
+def test_weighted_shrinkage_ignores_protected_mismatch() -> None:
+    from destripe.adaptive.stripe import measure_shrinkage
+
+    tensor = torch.zeros((32, 8), dtype=torch.float32)
+    tensor[:, 3] = 0.02
+    tensor[[0, 2], 3] += 0.5
+    weights = torch.ones_like(tensor)
+    weights[[0, 2], 3] = 0.0
+
+    assert measure_shrinkage(tensor, 0, weights=weights) > 0.9
+
+
 class TestAdaptiveRefine:
     def test_measure_shrinkage_uses_full_line_reliability(self) -> None:
         from destripe.adaptive import stripe
