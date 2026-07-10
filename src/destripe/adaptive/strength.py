@@ -1,4 +1,5 @@
 import math
+from dataclasses import dataclass
 
 import numpy as np
 import torch
@@ -9,6 +10,14 @@ from .constants import (
     NORMAL_MAD_SCALE,
 )
 from .stripe import measure_shrinkage, project
+
+
+@dataclass(frozen=True)
+class _StripeStats:
+    mode: int
+    abs_values: np.ndarray
+    sigma: float
+    coherence: float
 
 
 def estimate_strength(
@@ -24,32 +33,61 @@ def estimate_strength(
     direction_confidence = math.sqrt(score_strength * selection_strength) * (
         1 - ambiguity
     )
-    stripe_coherence = _measure_stripe(
+    stripe_stats = _make_stripe_stats(
         high_pass=high_pass,
         selected_directions=selected_directions,
+        direction_confidence=direction_confidence,
+    )
+    stripe_coherence = _measure_stripe(
+        stripe_stats=stripe_stats,
         selection_weights=selection_weights,
     )
     confidence = math.sqrt(direction_confidence * stripe_coherence)
 
     mu2 = _estimate_mu2(
-        high_pass=high_pass,
-        selected_directions=selected_directions,
+        stripe_stats=stripe_stats,
         selection_weights=selection_weights,
     )
     return mu2, confidence
 
 
-def _estimate_mu2(
+def _make_stripe_stats(
     *,
     high_pass: torch.Tensor,
     selected_directions: tuple[int, ...],
+    direction_confidence: float,
+) -> list[_StripeStats]:
+    stats = []
+    for mode in selected_directions:
+        stripe_img = project(high_pass, mode)
+        values = stripe_img.detach().cpu().numpy().reshape(-1)
+        reliability = measure_shrinkage(high_pass, mode)
+        sigma = _estimate_sigma(values) * math.sqrt(
+            max(0.0, 1 - reliability * direction_confidence)
+        )
+        stripe_amp = float(stripe_img.abs().mean().item())
+        residual_amp = float((high_pass - stripe_img).abs().mean().item())
+        coherence = stripe_amp / (stripe_amp + residual_amp + EPS)
+        stats.append(
+            _StripeStats(
+                mode=mode,
+                abs_values=np.abs(values),
+                sigma=sigma,
+                coherence=coherence,
+            )
+        )
+    return stats
+
+
+def _estimate_mu2(
+    *,
+    stripe_stats: list[_StripeStats],
     selection_weights: np.ndarray,
 ) -> float:
     candidates = [1 / denominator for denominator in MU2_DENOMINATORS]
     risks = [
         _measure_mu2_risk(
-            high_pass=high_pass,
-            selected_directions=selected_directions,
+            stripe_stats=stripe_stats,
             selection_weights=selection_weights,
             threshold=threshold,
         )
@@ -67,20 +105,21 @@ def _estimate_mu2(
 
 def _measure_mu2_risk(
     *,
-    high_pass: torch.Tensor,
-    selected_directions: tuple[int, ...],
+    stripe_stats: list[_StripeStats],
     selection_weights: np.ndarray,
     threshold: float,
 ) -> float:
     risks = []
     weights = []
-    for mode in selected_directions:
-        stripe_img = project(high_pass, mode)
-        sigma = _estimate_sigma(stripe_img)
-        reliability = measure_shrinkage(high_pass, mode)
-        sigma *= math.sqrt(max(0.0, 1 - reliability))
-        risks.append(_measure_sure(stripe_img, threshold=threshold, sigma=sigma))
-        weights.append(float(selection_weights[mode]))
+    for stats in stripe_stats:
+        risks.append(
+            _measure_sure(
+                stats.abs_values,
+                threshold=threshold,
+                sigma=stats.sigma,
+            )
+        )
+        weights.append(float(selection_weights[stats.mode]))
 
     if not risks:
         return 0.0
@@ -93,33 +132,30 @@ def _measure_mu2_risk(
 
 
 def _measure_sure(
-    values: torch.Tensor,
+    abs_values: np.ndarray,
     *,
     threshold: float,
     sigma: float,
 ) -> float:
-    arr = values.detach().cpu().numpy().reshape(-1)
-    if arr.size == 0:
+    if abs_values.size == 0:
         return 0.0
 
-    abs_arr = np.abs(arr)
     sigma2 = sigma * sigma
-    bias = np.minimum(abs_arr * abs_arr, threshold * threshold)
-    degrees = abs_arr > threshold
+    bias = np.minimum(abs_values * abs_values, threshold * threshold)
+    degrees = abs_values > threshold
     return float(np.mean(bias + 2 * sigma2 * degrees))
 
 
-def _estimate_sigma(values: torch.Tensor) -> float:
-    arr = values.detach().cpu().numpy().reshape(-1)
-    if arr.size == 0:
+def _estimate_sigma(values: np.ndarray) -> float:
+    if values.size == 0:
         return EPS
 
-    centered = arr - np.median(arr)
+    centered = values - np.median(values)
     mad = float(np.median(np.abs(centered)))
     if mad > EPS:
         return mad / NORMAL_MAD_SCALE
 
-    std = float(np.std(arr))
+    std = float(np.std(values))
     if std > EPS:
         return std
     return EPS
@@ -141,18 +177,13 @@ def _measure_entropy(weights: np.ndarray) -> float:
 
 def _measure_stripe(
     *,
-    high_pass: torch.Tensor,
-    selected_directions: tuple[int, ...],
+    stripe_stats: list[_StripeStats],
     selection_weights: np.ndarray,
 ) -> float:
-    coherences = []
+    coherences = [stats.coherence for stats in stripe_stats]
     weights = []
-    for mode in selected_directions:
-        stripe_img = project(high_pass, mode)
-        stripe_amp = float(stripe_img.abs().mean().item())
-        residual_amp = float((high_pass - stripe_img).abs().mean().item())
-        coherences.append(stripe_amp / (stripe_amp + residual_amp + EPS))
-        weights.append(float(selection_weights[mode]))
+    for stats in stripe_stats:
+        weights.append(float(selection_weights[stats.mode]))
 
     if not coherences:
         return 0.0

@@ -1,1 +1,1 @@
-from .remover import UniversalStripeRemover
+from .remover import UniversalStripeRemover as UniversalStripeRemover

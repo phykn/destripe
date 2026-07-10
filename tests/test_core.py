@@ -100,6 +100,16 @@ class TestDirections:
             UniversalStripeRemover(device="cpu", directions=directions)
 
 
+class TestConfiguration:
+    @pytest.mark.parametrize("name", ["mu1", "mu2"])
+    @pytest.mark.parametrize("value", [0.0, -0.1, np.nan, np.inf, True, "bad"])
+    def test_invalid_regularization_weight(self, name: str, value: object) -> None:
+        kwargs = {name: value, "device": "cpu"}
+
+        with pytest.raises(ValueError, match=name):
+            UniversalStripeRemover(**kwargs)  # type: ignore[arg-type]
+
+
 class TestProcess:
     def test_grayscale_2d(self, remover: UniversalStripeRemover) -> None:
         img = torch.rand(32, 32)
@@ -129,9 +139,33 @@ class TestProcess:
         with pytest.raises(ValueError, match="iterations"):
             remover.process(image=torch.rand(32, 32), iterations=0)
 
+    @pytest.mark.parametrize("iterations", [True, 1.5])
+    def test_invalid_iteration_type(
+        self,
+        remover: UniversalStripeRemover,
+        iterations: object,
+    ) -> None:
+        with pytest.raises(ValueError, match="iterations"):
+            remover.process(
+                image=torch.rand(32, 32),
+                iterations=iterations,  # type: ignore[arg-type]
+            )
+
     def test_invalid_tol(self, remover: UniversalStripeRemover) -> None:
         with pytest.raises(ValueError, match="tol"):
             remover.process(image=torch.rand(32, 32), tol=-1e-3)
+
+    @pytest.mark.parametrize("tol", [np.nan, np.inf, True, "bad"])
+    def test_invalid_tol_value(
+        self,
+        remover: UniversalStripeRemover,
+        tol: object,
+    ) -> None:
+        with pytest.raises(ValueError, match="tol"):
+            remover.process(
+                image=torch.rand(32, 32),
+                tol=tol,  # type: ignore[arg-type]
+            )
 
     def test_invalid_non_finite(self, remover: UniversalStripeRemover) -> None:
         img = torch.rand(32, 32)
@@ -143,6 +177,19 @@ class TestProcess:
         img = torch.full((32, 32), 0.5)
         result = remover.process(image=img, iterations=20)
         assert torch.allclose(result, img, atol=1e-3)
+
+    @pytest.mark.parametrize("shape", [(1, 8), (8, 1)])
+    def test_single_pixel_axis_returns_copy(
+        self,
+        remover: UniversalStripeRemover,
+        shape: tuple[int, int],
+    ) -> None:
+        img = torch.rand(shape)
+
+        result = remover.process(image=img, iterations=5)
+
+        assert result is not img
+        assert torch.equal(result, img)
 
 
 class TestProcessTiled:
@@ -174,6 +221,19 @@ class TestProcessTiled:
         with pytest.raises(ValueError, match="overlap"):
             remover.process_tiled(image=torch.rand(32, 32), tiles=2, overlap=-1)
 
+    @pytest.mark.parametrize("overlap", [0.5, True, np.nan])
+    def test_invalid_overlap_type(
+        self,
+        remover: UniversalStripeRemover,
+        overlap: object,
+    ) -> None:
+        with pytest.raises(ValueError, match="overlap"):
+            remover.process_tiled(
+                image=torch.rand(32, 32),
+                tiles=2,
+                overlap=overlap,  # type: ignore[arg-type]
+            )
+
     def test_tile_mus_length_error_restores_mus(
         self, remover: UniversalStripeRemover
     ) -> None:
@@ -200,6 +260,8 @@ class TestProcessTiled:
             [(True, 1 / 300)] * 4,
             [(np.nan, 1 / 300)] * 4,
             [(0.1, np.inf)] * 4,
+            [(0.0, 1 / 300)] * 4,
+            [(-0.1, 1 / 300)] * 4,
         ],
     )
     def test_malformed_tile_mus_raise_value_error(
@@ -328,6 +390,15 @@ class TestProcessTiled:
 
 
 class TestAdaptiveEstimator:
+    def test_constant_high_pass_scores_are_direction_neutral(self) -> None:
+        from destripe.adaptive import directions
+
+        scores = directions.score_directions(torch.zeros(64, 64))
+        values = np.array([scores[mode] for mode in range(5)])
+
+        assert np.isfinite(values).all()
+        assert np.allclose(values, values[0])
+
     def test_vertical_stripes_select_mode_zero(self) -> None:
         from destripe.adaptive import constants
 
@@ -340,6 +411,15 @@ class TestAdaptiveEstimator:
         assert params.mu2 == pytest.approx(constants.MU2_MIN)
         assert 1 / 6 <= params.mu1 <= 1 / 3
         assert 1 / 300 <= params.mu2 <= 1 / 60
+
+    def test_sparse_vertical_stripes_select_mode_zero(self) -> None:
+        img = np.zeros((96, 96), dtype=np.float64)
+        img[:, 20] = 1.0
+        img[:, 60] = 0.8
+
+        params = estimate_adaptive_params(img, level=2)
+
+        assert params.directions[0] == 0
 
     @pytest.mark.parametrize(
         ("level", "mu1"),
@@ -458,6 +538,44 @@ class TestAdaptiveEstimator:
         assert p1.mu1 == pytest.approx(p2.mu1)
         assert p1.mu2 == pytest.approx(p2.mu2)
         assert p1.confidence == pytest.approx(p2.confidence)
+
+    def test_strength_reuses_per_direction_statistics(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from destripe.adaptive import strength
+
+        calls = {"project": 0, "measure_shrinkage": 0}
+        original_project = strength.project
+        original_measure_shrinkage = strength.measure_shrinkage
+
+        def counted_project(tensor: torch.Tensor, mode: int) -> torch.Tensor:
+            calls["project"] += 1
+            return original_project(tensor, mode)
+
+        def counted_measure_shrinkage(tensor: torch.Tensor, mode: int) -> float:
+            calls["measure_shrinkage"] += 1
+            return original_measure_shrinkage(tensor, mode)
+
+        monkeypatch.setattr(strength, "project", counted_project)
+        monkeypatch.setattr(
+            strength,
+            "measure_shrinkage",
+            counted_measure_shrinkage,
+        )
+
+        high_pass = torch.randn(
+            (48, 48),
+            generator=torch.Generator().manual_seed(19),
+        )
+        strength.estimate_strength(
+            high_pass=high_pass,
+            selected_directions=(0, 2),
+            score_weights=np.array([0.6, 0.0, 0.4, 0.0, 0.0]),
+            selection_weights=np.array([0.6, 0.0, 0.4, 0.0, 0.0]),
+        )
+
+        assert calls == {"project": 2, "measure_shrinkage": 2}
 
     def test_direction_support_uses_relative_scores_without_cutoffs(self) -> None:
         from destripe.adaptive import directions
@@ -628,6 +746,29 @@ class TestDestripe:
         result = destripe(gray_image, iterations=20)
         assert result.shape == gray_image.shape
         assert result.dtype == gray_image.dtype
+
+    def test_solver_receives_float32_and_restores_input_dtype(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        seen = {}
+
+        class FakeRemover:
+            def __init__(self, **_: object) -> None:
+                pass
+
+            def process_tiled(self, image: np.ndarray, **_: object) -> torch.Tensor:
+                seen["dtype"] = image.dtype
+                return torch.as_tensor(image)
+
+        monkeypatch.setattr(destripe_ops, "UniversalStripeRemover", FakeRemover)
+
+        img = np.random.default_rng(31).random((16, 16)).astype(np.float64)
+        result = destripe(img, iterations=1)
+
+        assert seen["dtype"] == np.float32
+        assert result.dtype == img.dtype
+        assert np.allclose(result, img, atol=1e-7)
 
     def test_adaptive_uses_estimated_parameters(
         self, monkeypatch: pytest.MonkeyPatch

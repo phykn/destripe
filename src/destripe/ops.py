@@ -189,8 +189,9 @@ def _destripe_grayscale(
             level=adaptive_level,
             directions=resolved_directions,
         )
+    solver_input = np.asarray(processed_gray, dtype=np.float32)
     solver_clean = remover.process_tiled(
-        image=processed_gray,
+        image=solver_input,
         tiles=tiles,
         iterations=iterations,
         tol=tol,

@@ -1,9 +1,8 @@
-import math
-
 import numpy as np
 import torch
 
 from .constants import ALL_DIRECTIONS, CROSS_OFFSETS, EPS, PARALLEL_OFFSETS
+from .stripe import measure_shrinkage
 
 
 def score_directions(high_pass: torch.Tensor) -> dict[int, float]:
@@ -63,8 +62,8 @@ def _score_direction(t: torch.Tensor, *, mode: int) -> float:
     cross = _offset_diff(t, *cross_offset).abs().reshape(-1)
     parallel_q = float(torch.quantile(parallel, 0.75).item()) + EPS
     cross_q = float(torch.quantile(cross, 0.90).item()) + EPS
-    cross_length = math.hypot(*cross_offset)
-    return (cross_q / cross_length) / parallel_q
+    reliability = measure_shrinkage(t, mode)
+    return (cross_q / parallel_q) * reliability
 
 
 def _standardize_scores(values: np.ndarray) -> np.ndarray:

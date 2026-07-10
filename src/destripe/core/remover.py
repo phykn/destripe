@@ -25,8 +25,8 @@ class UniversalStripeRemover:
         self.device = device or torch.device(
             "cuda" if torch.cuda.is_available() else "cpu"
         )
-        self.mu1 = mu1
-        self.mu2 = mu2
+        self.mu1 = self._validate_positive_real(name="mu1", value=mu1)
+        self.mu2 = self._validate_positive_real(name="mu2", value=mu2)
         self.directions = self._validate_directions(directions)
         self.tau = 0.35
         self.sigma = 0.35
@@ -58,6 +58,8 @@ class UniversalStripeRemover:
 
         if input_tensor.dim() not in {2, 3}:
             raise ValueError("image must have shape (H, W) or (N, H, W).")
+        if min(input_tensor.shape[-2:]) < 2:
+            return input_tensor.clone()
 
         squeeze_batch = input_tensor.dim() == 2
         if squeeze_batch:
@@ -278,8 +280,13 @@ class UniversalStripeRemover:
                 raise ValueError("tile_mus entries must be finite numeric pairs.")
             mu1_float = float(mu1)
             mu2_float = float(mu2)
-            if not math.isfinite(mu1_float) or not math.isfinite(mu2_float):
-                raise ValueError("tile_mus entries must be finite numeric pairs.")
+            if (
+                not math.isfinite(mu1_float)
+                or not math.isfinite(mu2_float)
+                or mu1_float <= 0
+                or mu2_float <= 0
+            ):
+                raise ValueError("tile_mus entries must be positive finite pairs.")
             validated.append((mu1_float, mu2_float))
         return validated
 
@@ -461,17 +468,45 @@ class UniversalStripeRemover:
 
     @staticmethod
     def _validate_solver_params(iterations: int, tol: float) -> None:
-        if not isinstance(iterations, int) or iterations <= 0:
+        if (
+            isinstance(iterations, bool)
+            or not isinstance(iterations, numbers.Integral)
+            or iterations <= 0
+        ):
             raise ValueError(f"iterations must be a positive integer, got {iterations}.")
-        if tol < 0:
-            raise ValueError(f"tol must be non-negative, got {tol}.")
+        if (
+            isinstance(tol, bool)
+            or not isinstance(tol, numbers.Real)
+            or not math.isfinite(float(tol))
+            or tol < 0
+        ):
+            raise ValueError(f"tol must be a finite non-negative number, got {tol}.")
 
     @staticmethod
     def _validate_tiling_params(tiles: int, overlap: int) -> None:
-        if not isinstance(tiles, int) or tiles <= 0:
+        if (
+            isinstance(tiles, bool)
+            or not isinstance(tiles, numbers.Integral)
+            or tiles <= 0
+        ):
             raise ValueError(f"tiles must be a positive integer, got {tiles}.")
-        if overlap < 0:
-            raise ValueError(f"overlap must be non-negative, got {overlap}.")
+        if (
+            isinstance(overlap, bool)
+            or not isinstance(overlap, numbers.Integral)
+            or overlap < 0
+        ):
+            raise ValueError(f"overlap must be a non-negative integer, got {overlap}.")
+
+    @staticmethod
+    def _validate_positive_real(*, name: str, value: object) -> float:
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, numbers.Real)
+            or not math.isfinite(float(value))
+            or value <= 0
+        ):
+            raise ValueError(f"{name} must be a positive finite number, got {value}.")
+        return float(value)
 
     @staticmethod
     def _validate_directions(directions: Sequence[int] | None) -> tuple[int, ...]:
