@@ -8,10 +8,9 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from benchmarks.acceptance import evaluate_acceptance
+from benchmarks.acceptance import ROBUSTNESS_PATTERNS, evaluate_acceptance
 from destripe import destripe
-from destripe.adaptive import AdaptiveParams, estimate_adaptive_params
-from destripe.adaptive.constants import PARALLEL_OFFSETS
+from destripe.automatic import PARALLEL_OFFSETS
 
 
 RESULT_FIELDS = (
@@ -24,11 +23,6 @@ RESULT_FIELDS = (
     "carrier",
     "profile_scale",
     "angle_offset",
-    "level",
-    "selected_directions",
-    "mu1",
-    "mu2",
-    "confidence",
     "input_psnr",
     "output_psnr",
     "input_ssim",
@@ -258,77 +252,54 @@ def run_benchmark(
     *,
     pattern_specs: tuple[PatternSpec, ...] | list[PatternSpec],
     strengths: tuple[float, ...] | list[float],
-    levels: tuple[int, ...] | list[int],
-    iterations: int,
     process_size: int | None,
     seed: int,
-    device: str,
 ) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for sample_index, sample in enumerate(samples):
         if not sample.has_ground_truth:
-            for level in levels:
-                params = estimate_adaptive_params(sample.image, level=level)
-                output = destripe(
-                    sample.image,
-                    adaptive=level,
-                    iterations=iterations,
-                    process_size=process_size,
-                    device=device,
-                )
-                rows.append(
-                    _make_row(
-                        seed=seed,
-                        sample=sample.name,
-                        case_type="real",
-                        pattern="existing",
-                        mode=None,
-                        strength=None,
-                        carrier="additive",
-                        profile_scale=9,
-                        angle_offset=0.0,
-                        level=level,
-                        params=params,
-                        input_psnr=None,
-                        output_psnr=None,
-                        input_ssim=None,
-                        output_ssim=None,
-                        stripe_projection_left_pct=None,
-                        removed_rmse=_rmse(sample.image, output),
-                    )
-                )
-            continue
-
-        for level in levels:
-            params = estimate_adaptive_params(sample.image, level=level)
-            output = destripe(
-                sample.image,
-                adaptive=level,
-                iterations=iterations,
-                process_size=process_size,
-                device=device,
-            )
+            output = destripe(sample.image, process_size=process_size)
             rows.append(
                 _make_row(
                     seed=seed,
                     sample=sample.name,
-                    case_type="clean",
-                    pattern="none",
+                    case_type="real",
+                    pattern="existing",
                     mode=None,
-                    strength=0.0,
+                    strength=None,
                     carrier="additive",
                     profile_scale=9,
                     angle_offset=0.0,
-                    level=level,
-                    params=params,
-                    input_psnr=math.inf,
-                    output_psnr=_psnr(sample.image, output),
-                    input_ssim=1.0,
-                    output_ssim=structural_similarity(sample.image, output),
-                    stripe_projection_left_pct=0.0,
+                    input_psnr=None,
+                    output_psnr=None,
+                    input_ssim=None,
+                    output_ssim=None,
+                    stripe_projection_left_pct=None,
                     removed_rmse=_rmse(sample.image, output),
                 )
             )
+            continue
+
+        output = destripe(sample.image, process_size=process_size)
+        rows.append(
+            _make_row(
+                seed=seed,
+                sample=sample.name,
+                case_type="clean",
+                pattern="none",
+                mode=None,
+                strength=0.0,
+                carrier="additive",
+                profile_scale=9,
+                angle_offset=0.0,
+                input_psnr=math.inf,
+                output_psnr=_psnr(sample.image, output),
+                input_ssim=1.0,
+                output_ssim=structural_similarity(sample.image, output),
+                stripe_projection_left_pct=0.0,
+                removed_rmse=_rmse(sample.image, output),
+            )
+        )
 
         for pattern_index, spec in enumerate(pattern_specs):
             for strength_index, strength in enumerate(strengths):
@@ -349,40 +320,30 @@ def run_benchmark(
                     strength=strength,
                     carrier=spec.carrier,
                 )
-                for level in levels:
-                    params = estimate_adaptive_params(observed, level=level)
-                    output = destripe(
-                        observed,
-                        adaptive=level,
-                        iterations=iterations,
-                        process_size=process_size,
-                        device=device,
+                output = destripe(observed, process_size=process_size)
+                rows.append(
+                    _make_row(
+                        seed=seed,
+                        sample=sample.name,
+                        case_type="synthetic",
+                        pattern=spec.name,
+                        mode=spec.mode,
+                        strength=strength,
+                        carrier=spec.carrier,
+                        profile_scale=spec.profile_scale,
+                        angle_offset=spec.angle_offset,
+                        input_psnr=_psnr(sample.image, observed),
+                        output_psnr=_psnr(sample.image, output),
+                        input_ssim=structural_similarity(sample.image, observed),
+                        output_ssim=structural_similarity(sample.image, output),
+                        stripe_projection_left_pct=_stripe_projection_left(
+                            clean=sample.image,
+                            output=output,
+                            actual_stripe=actual_stripe,
+                        ),
+                        removed_rmse=_rmse(observed, output),
                     )
-                    rows.append(
-                        _make_row(
-                            seed=seed,
-                            sample=sample.name,
-                            case_type="synthetic",
-                            pattern=spec.name,
-                            mode=spec.mode,
-                            strength=strength,
-                            carrier=spec.carrier,
-                            profile_scale=spec.profile_scale,
-                            angle_offset=spec.angle_offset,
-                            level=level,
-                            params=params,
-                            input_psnr=_psnr(sample.image, observed),
-                            output_psnr=_psnr(sample.image, output),
-                            input_ssim=structural_similarity(sample.image, observed),
-                            output_ssim=structural_similarity(sample.image, output),
-                            stripe_projection_left_pct=_stripe_projection_left(
-                                clean=sample.image,
-                                output=output,
-                                actual_stripe=actual_stripe,
-                            ),
-                            removed_rmse=_rmse(observed, output),
-                        )
-                    )
+                )
     return rows
 
 
@@ -397,8 +358,6 @@ def _make_row(
     carrier: str,
     profile_scale: int,
     angle_offset: float,
-    level: int,
-    params: AdaptiveParams,
     input_psnr: float | None,
     output_psnr: float | None,
     input_ssim: float | None,
@@ -416,11 +375,6 @@ def _make_row(
         "carrier": carrier,
         "profile_scale": profile_scale,
         "angle_offset": angle_offset,
-        "level": level,
-        "selected_directions": params.directions,
-        "mu1": params.mu1,
-        "mu2": params.mu2,
-        "confidence": params.confidence,
         "input_psnr": input_psnr,
         "output_psnr": output_psnr,
         "input_ssim": input_ssim,
@@ -460,19 +414,99 @@ def write_results(path: str | Path, rows: list[dict[str, object]]) -> None:
         writer = csv.DictWriter(stream, fieldnames=RESULT_FIELDS)
         writer.writeheader()
         for row in rows:
-            serialized = dict(row)
-            directions = serialized["selected_directions"]
-            serialized["selected_directions"] = "|".join(
-                str(mode) for mode in directions
+            writer.writerow(row)
+
+
+def diagnostic_summary_lines(rows: list[dict[str, object]]) -> list[str]:
+    """Summarize mandatory weak-oblique and robustness diagnostics."""
+    lines: list[str] = []
+    seeds = sorted({row["seed"] for row in rows}, key=str)
+    for seed in seeds:
+        seed_rows = [row for row in rows if row["seed"] == seed]
+        for mode in range(1, 5):
+            selected = [
+                row
+                for row in seed_rows
+                if row.get("pattern") == f"curtain_m{mode}"
+                and row.get("strength") == 0.01
+            ]
+            if selected:
+                lines.append(
+                    _diagnostic_summary_line(
+                        seed=seed,
+                        label=f"weak-oblique mode {mode}",
+                        rows=selected,
+                    )
+                )
+
+        robustness = [
+            row
+            for row in seed_rows
+            if row.get("pattern") in ROBUSTNESS_PATTERNS
+        ]
+        for strength, label in (
+            (0.01, "weak"),
+            (0.03, "medium"),
+            (0.06, "strong"),
+        ):
+            selected = [
+                row for row in robustness if row.get("strength") == strength
+            ]
+            if selected:
+                lines.append(
+                    _diagnostic_summary_line(
+                        seed=seed,
+                        label=f"robustness {label}",
+                        rows=selected,
+                    )
+                )
+        if robustness:
+            lines.append(
+                _diagnostic_summary_line(
+                    seed=seed,
+                    label="robustness pooled",
+                    rows=robustness,
+                )
             )
-            writer.writerow(serialized)
+    return lines
+
+
+def _diagnostic_summary_line(
+    *,
+    seed: object,
+    label: str,
+    rows: list[dict[str, object]],
+) -> str:
+    psnr_gains = [
+        float(row["output_psnr"]) - float(row["input_psnr"]) for row in rows
+    ]
+    ssim_gains = [
+        float(row["output_ssim"]) - float(row["input_ssim"]) for row in rows
+    ]
+    projections = [float(row["stripe_projection_left_pct"]) for row in rows]
+    joint_coverage = np.mean(
+        [
+            psnr_gain >= 0.05 and ssim_gain >= 0.0001
+            for psnr_gain, ssim_gain in zip(psnr_gains, ssim_gains)
+        ]
+    )
+    projection_coverage = np.mean([value <= 85.0 for value in projections])
+    return (
+        f"seed {seed} {label}: cases={len(rows)} "
+        f"psnr_gain={np.mean(psnr_gains):+.6f} "
+        f"ssim_gain={np.mean(ssim_gains):+.6f} "
+        f"projection_left={np.mean(projections):.3f}% "
+        f"joint_coverage={joint_coverage:.1%} "
+        f"projection_coverage={projection_coverage:.1%} "
+        f"worst_gain={min(psnr_gains):+.6f}"
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     specs = default_pattern_specs()
     specs_by_name = {spec.name: spec for spec in specs}
     parser = argparse.ArgumentParser(
-        description="Evaluate adaptive destriping with synthetic stripe pairs.",
+        description="Evaluate automatic destriping with synthetic stripe pairs.",
     )
     parser.add_argument("--asset-dir", type=Path, default=Path("asset"))
     parser.add_argument(
@@ -492,11 +526,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=float,
         default=[0.01, 0.03, 0.06],
     )
-    parser.add_argument("--levels", nargs="+", type=int, default=[0, 1, 2, 3])
-    parser.add_argument("--iterations", type=int, default=500)
     parser.add_argument("--process-size", type=int, default=256)
     parser.add_argument("--seed", type=int, default=1234)
-    parser.add_argument("--device", default="cpu")
     parser.add_argument("--check-acceptance", action="store_true")
     args = parser.parse_args(argv)
 
@@ -504,11 +535,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         load_samples(args.asset_dir),
         pattern_specs=tuple(specs_by_name[name] for name in args.patterns),
         strengths=tuple(args.strengths),
-        levels=tuple(args.levels),
-        iterations=args.iterations,
         process_size=args.process_size,
         seed=args.seed,
-        device=args.device,
     )
     write_results(args.output, rows)
     real_count = sum(row["case_type"] == "real" for row in rows)
@@ -519,6 +547,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"({real_count} real-only, {clean_count} clean, "
         f"{synthetic_count} synthetic)."
     )
+    for summary in diagnostic_summary_lines(rows):
+        print(f"diagnostic: {summary}")
     if args.check_acceptance:
         failures = evaluate_acceptance(rows)
         for failure in failures:

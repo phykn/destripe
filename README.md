@@ -1,95 +1,56 @@
 # destripe
 
-PDHG-based stripe-noise removal for NumPy images, backed by PyTorch.
+Automatic robust directional profiles remove stripe noise from NumPy images.
+For advanced control, an optional manual PDHG core is available through PyTorch.
 
-The solver decomposes an image into a TV-regularized clean component and sparse
-directional stripe components. In most cases, use an adaptive level.
+## Automatic Usage
 
-## Usage
+In most cases, call `destripe` directly:
 
 ```python
 from destripe import destripe
 
-clean = destripe(
-    image,
-    adaptive=2,
-    iterations=500,
-)
+clean = destripe(image, process_size=256)
 ```
 
-`image` can be `(H, W)`, `(H, W, 1)`, or `(H, W, 3)`. Output shape and dtype are
-preserved.
+`image` can have shape `(H, W)`, `(H, W, 1)`, or `(H, W, 3)`. The output keeps
+the input shape and dtype. Set `process_size=None` to analyze the original
+resolution, or use a positive long-edge size to estimate broad curtain fields
+at lower resolution and resize the correction back. Set `proj=False` only when
+unclipped floating output is required.
 
-## Adaptive Mode
+The automatic H3 path evaluates five stripe directions, estimates robust line
+profiles from direction-consistent pixels, checks distant-block and multi-scale
+repeatability, and subtracts the strongest supported profile with an analytic
+coefficient. It does not require ground truth, a strength level, or a per-image
+threshold.
 
-Adaptive mode automatically:
+## Manual PDHG Core
 
-- selects the stripe direction set from five candidate modes,
-- sets `mu1` from the requested level,
-- estimates `mu2` from stripe-candidate soft-threshold risk,
-- applies a residual line-projection shrinkage step for weak curtain artifacts.
-
-Levels control how strongly the clean image is regularized:
-
-```text
-adaptive=0 -> mu1 = 1 / 6
-adaptive=1 -> mu1 = 1 / 5
-adaptive=2 -> mu1 = 1 / 4
-adaptive=3 -> mu1 = 1 / 3
-```
-
-`mu2` is still selected from the image, using line-reliability-adjusted
-soft-threshold risk over `1 / 300` through `1 / 60`.
-
-The residual step projects the high-pass clean image onto the selected
-line-constant stripe subspace and scales it by split-half cross-covariance:
-
-```text
-alpha = clip(Cov(p1, p2) / Var((p1 + p2) / 2), 0, 1)
-```
-
-This keeps line structure that is reproducible across the split and suppresses
-non-reproducible texture.
-
-Manual `directions`, `mu1`, and `mu2` are ignored when `adaptive` is a level.
-
-## Large Images
-
-Use `process_size` to estimate broad curtain fields at lower resolution:
+Use `UniversalStripeRemover` when the direction and regularization weights must
+be controlled explicitly:
 
 ```python
-clean = destripe(image, adaptive=2, process_size=512)
-```
+from destripe import UniversalStripeRemover
 
-Use `tiles` when stripe strength varies locally:
-
-```python
-clean = destripe(image, adaptive=2, tiles=3, overlap=64)
-```
-
-## Manual Mode
-
-```python
-clean = destripe(
-    image,
-    adaptive=None,
-    directions=[0],
+remover = UniversalStripeRemover(
     mu1=1 / 3,
     mu2=1 / 300,
+    directions=[0],
+    device="cpu",
 )
+clean = remover.process(image, iterations=500)
 ```
 
-`directions=None` uses all five modes. Mode `0` targets vertical stripes;
-`1..4` target diagonal modes.
+Mode `0` targets vertical stripes; modes `1` through `4` target the supported
+diagonal directions. Passing `directions=None` uses all five modes.
 
-## Key Parameters
+## Validation Scope
 
-- `adaptive`: `None` for manual mode, or `0..3` for adaptive mode.
-- `process_size`: optional solver long-edge size; `None` keeps original resolution.
-- `tiles`: number of tiles per side.
-- `mu1`: manual TV weight for `adaptive=None`.
-- `mu2`: manual stripe sparsity weight for `adaptive=None`.
-- `device`: `"cpu"`, `"cuda"`, `torch.device`, or `None`.
+The automatic path is validated primarily for vertical battery-SEM curtaining.
+Medium and strong oblique stripes perform well, but weak oblique direction
+coverage remains incomplete. That limitation needs a separate future design
+rather than hidden image-specific heuristics.
 
 ## Reference
 

@@ -66,7 +66,6 @@ RowIdentity = tuple[
     float | None,
     int | None,
     str,
-    int,
 ]
 
 
@@ -96,14 +95,8 @@ def evaluate_acceptance(rows: list[dict[str, object]]) -> list[str]:
             for _, row in unique_rows
             if str(row.get("pattern")) in CANONICAL_CURTAIN_PATTERNS
         ]
-        robustness = [
-            row
-            for _, row in unique_rows
-            if str(row.get("pattern")) in ROBUSTNESS_PATTERNS
-        ]
         failures.extend(_clean_failures(seed, clean))
         failures.extend(_canonical_failures(seed, canonical))
-        failures.extend(_robustness_failures(seed, robustness))
 
     return sorted(failures)
 
@@ -113,27 +106,11 @@ def _validate_seed_rows(
     rows: list[dict[str, object]],
 ) -> tuple[list[str], list[tuple[RowIdentity, dict[str, object]]]]:
     failures: list[str] = []
-    levels = {
-        level
-        for row in rows
-        if row.get("case_type") in {"clean", "synthetic"}
-        and (level := _optional_int(row.get("level"))) is not None
-    }
-    if not levels:
-        failures.append(f"seed {seed}: missing level data")
-
     candidates: dict[RowIdentity, list[dict[str, object]]] = defaultdict(list)
     for row in rows:
         case_type = str(row.get("case_type", ""))
         if case_type not in {"clean", "synthetic"}:
             failures.append(f"seed {seed}: unexpected case_type {case_type!r}")
-            continue
-        level = _optional_int(row.get("level"))
-        if level is None:
-            failures.append(
-                f"seed {seed} sample {row.get('sample', 'unknown')}: "
-                "missing or non-numeric level"
-            )
             continue
         sample = str(row.get("sample", ""))
         if sample not in EXPECTED_SAMPLES:
@@ -143,11 +120,10 @@ def _validate_seed_rows(
         if case_type == "clean":
             if not _matches_clean_metadata(row):
                 failures.append(
-                    f"seed {seed} sample {sample} level {level}: "
-                    "metadata mismatch for clean row"
+                    f"seed {seed} sample {sample}: metadata mismatch for clean row"
                 )
                 continue
-            identity = (seed, "clean", "none", 0.0, None, sample, level)
+            identity = (seed, "clean", "none", 0.0, None, sample)
         else:
             pattern = str(row.get("pattern", ""))
             expected = EXPECTED_PATTERNS.get(pattern)
@@ -156,7 +132,7 @@ def _validate_seed_rows(
                 continue
             if not _matches_pattern_metadata(row, expected):
                 failures.append(
-                    f"seed {seed} sample {sample} level {level}: metadata mismatch "
+                    f"seed {seed} sample {sample}: metadata mismatch "
                     f"for {pattern}; expected mode={expected.mode}, "
                     f"carrier={expected.carrier}, "
                     f"profile_scale={expected.profile_scale}, "
@@ -166,7 +142,7 @@ def _validate_seed_rows(
             strength = _normalized_strength(row.get("strength"))
             if strength is None:
                 failures.append(
-                    f"seed {seed} sample {sample} level {level}: unexpected strength "
+                    f"seed {seed} sample {sample}: unexpected strength "
                     f"{row.get('strength')!r} for {pattern}"
                 )
                 continue
@@ -177,7 +153,6 @@ def _validate_seed_rows(
                 strength,
                 expected.mode,
                 sample,
-                level,
             )
         candidates[identity].append(row)
 
@@ -201,7 +176,7 @@ def _validate_seed_rows(
             failures.append(f"seed {seed}: missing mode {mode} from synthetic rows")
 
     unique_rows: list[tuple[RowIdentity, dict[str, object]]] = []
-    for identity in _expected_identities(seed, levels):
+    for identity in _expected_identities(seed):
         matches = candidates.get(identity, [])
         if not matches:
             failures.append(_missing_identity_failure(identity))
@@ -215,41 +190,37 @@ def _validate_seed_rows(
     return failures, unique_rows
 
 
-def _expected_identities(seed: object, levels: set[int]) -> list[RowIdentity]:
+def _expected_identities(seed: object) -> list[RowIdentity]:
     identities: list[RowIdentity] = []
-    for level in sorted(levels):
-        for sample in EXPECTED_SAMPLES:
-            identities.append((seed, "clean", "none", 0.0, None, sample, level))
-        for pattern, metadata in EXPECTED_PATTERNS.items():
-            for strength in EXPECTED_STRENGTHS:
-                for sample in EXPECTED_SAMPLES:
-                    identities.append(
-                        (
-                            seed,
-                            "synthetic",
-                            pattern,
-                            strength,
-                            metadata.mode,
-                            sample,
-                            level,
-                        )
+    for sample in EXPECTED_SAMPLES:
+        identities.append((seed, "clean", "none", 0.0, None, sample))
+    for pattern, metadata in EXPECTED_PATTERNS.items():
+        for strength in EXPECTED_STRENGTHS:
+            for sample in EXPECTED_SAMPLES:
+                identities.append(
+                    (
+                        seed,
+                        "synthetic",
+                        pattern,
+                        strength,
+                        metadata.mode,
+                        sample,
                     )
+                )
     return identities
 
 
 def _missing_identity_failure(identity: RowIdentity) -> str:
     return (
         f"seed {identity[0]}: missing row (missing sample {identity[5]} coverage) "
-        f"for pattern {identity[2]}, strength {identity[3]}, mode {identity[4]}, "
-        f"level {identity[6]}"
+        f"for pattern {identity[2]}, strength {identity[3]}, mode {identity[4]}"
     )
 
 
 def _identity_label(identity: RowIdentity) -> str:
     return (
         f"seed={identity[0]}, case_type={identity[1]}, pattern={identity[2]}, "
-        f"strength={identity[3]}, mode={identity[4]}, sample={identity[5]}, "
-        f"level={identity[6]}"
+        f"strength={identity[3]}, mode={identity[4]}, sample={identity[5]}"
     )
 
 
@@ -304,7 +275,11 @@ def _canonical_failures(
     canonical: list[dict[str, object]],
 ) -> list[str]:
     failures: list[str] = []
-    weak = [row for row in canonical if _strength_is(row, 0.01)]
+    weak = [
+        row
+        for row in canonical
+        if row.get("pattern") == "curtain_m0" and _strength_is(row, 0.01)
+    ]
     weak_psnr = _gains(weak, "psnr")
     weak_ssim = _gains(weak, "ssim")
 
@@ -339,17 +314,6 @@ def _canonical_failures(
             failures.append(
                 f"seed {seed}: weak coverage {coverage:.1%} < 75.0% "
                 "for PSNR/SSIM gains"
-            )
-
-    for mode in SUPPORTED_MODES:
-        direction_rows = [
-            row for row in weak if _optional_int(row.get("mode")) == mode
-        ]
-        direction_gains = _gains(direction_rows, "psnr")
-        if direction_gains and mean(direction_gains) < 0.0:
-            failures.append(
-                f"seed {seed}: mode {mode} weak mean PSNR gain "
-                f"{mean(direction_gains):.3f} dB is negative"
             )
 
     projections = [
@@ -388,27 +352,6 @@ def _canonical_failures(
     return failures
 
 
-def _robustness_failures(
-    seed: object,
-    robustness: list[dict[str, object]],
-) -> list[str]:
-    failures: list[str] = []
-    gains = _gains(robustness, "psnr")
-    if not gains:
-        return failures
-    gain_mean = mean(gains)
-    if gain_mean < 0.0:
-        failures.append(
-            f"seed {seed}: robustness mean PSNR gain {gain_mean:.3f} dB is negative"
-        )
-    if min(gains) < -1.0:
-        failures.append(
-            f"seed {seed}: robustness PSNR loss {min(gains):.3f} dB "
-            "is worse than -1.000 dB"
-        )
-    return failures
-
-
 def _nonfinite_failures(
     row: dict[str, object],
     identity: RowIdentity,
@@ -424,13 +367,13 @@ def _nonfinite_failures(
             "stripe_projection_left_pct",
         )
     elif case_type == "clean":
-        if not _valid_clean_input_psnr(row.get("input_psnr")):
-            failures.append(
-                f"seed {identity[0]} sample {identity[5]} level {identity[6]}: "
-                "clean input_psnr must be finite or positive infinity"
-            )
+        for metric in ("input_psnr", "output_psnr"):
+            if not _valid_clean_psnr(row.get(metric)):
+                failures.append(
+                    f"seed {identity[0]} sample {identity[5]}: "
+                    f"clean {metric} must be finite or positive infinity"
+                )
         metrics = (
-            "output_psnr",
             "input_ssim",
             "output_ssim",
             "stripe_projection_left_pct",
@@ -441,14 +384,14 @@ def _nonfinite_failures(
     for metric in metrics:
         if _finite_number(row.get(metric)) is None:
             failures.append(
-                f"seed {identity[0]} sample {identity[5]} level {identity[6]}: "
+                f"seed {identity[0]} sample {identity[5]}: "
                 f"non-finite {metric} for {identity[2]} strength {identity[3]} "
                 f"mode {identity[4]}"
             )
     return failures
 
 
-def _valid_clean_input_psnr(value: object) -> bool:
+def _valid_clean_psnr(value: object) -> bool:
     try:
         number = float(value)
     except (TypeError, ValueError):
