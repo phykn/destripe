@@ -7,6 +7,7 @@ from destripe import preprocess
 from destripe import UniversalStripeRemover, destripe
 from destripe.adaptive import estimate_adaptive_params
 from destripe.core import operators
+from destripe.core.result import StripeResult
 
 
 @pytest.fixture()
@@ -192,6 +193,37 @@ class TestProcess:
         assert torch.equal(result, img)
 
 
+@pytest.mark.parametrize("tiles", [1, 2])
+def test_process_tiled_components_reconstructs_input(tiles: int) -> None:
+    remover = UniversalStripeRemover(device="cpu", directions=[0, 2])
+    image = torch.rand((32, 36), generator=torch.Generator().manual_seed(92))
+
+    result = remover.process_tiled_components(
+        image=image,
+        tiles=tiles,
+        overlap=4,
+        iterations=8,
+        proj=False,
+    )
+
+    assert result.clean.shape == image.shape
+    assert len(result.components) == 2
+    assert all(component.shape == image.shape for component in result.components)
+    reconstructed = result.clean + torch.stack(result.components).sum(dim=0)
+    assert torch.allclose(reconstructed, image, atol=2e-5, rtol=2e-5)
+
+
+def test_process_tiled_components_handles_tiny_image() -> None:
+    remover = UniversalStripeRemover(device="cpu", directions=[0, 3])
+    image = torch.rand((1, 8), generator=torch.Generator().manual_seed(93))
+
+    result = remover.process_tiled_components(image=image, tiles=3, iterations=1)
+
+    assert torch.equal(result.clean, image)
+    assert len(result.components) == 2
+    assert all(torch.count_nonzero(component) == 0 for component in result.components)
+
+
 class TestProcessTiled:
     def test_tiles_1_fallback(self, remover: UniversalStripeRemover) -> None:
         img = torch.rand(32, 32)
@@ -320,7 +352,7 @@ class TestProcessTiled:
     ) -> None:
         original_mu1, original_mu2 = remover.mu1, remover.mu2
 
-        def fail_solve(**_: object) -> torch.Tensor:
+        def fail_solve(**_: object) -> StripeResult:
             raise RuntimeError("forced tile failure")
 
         monkeypatch.setattr(remover, "_solve", fail_solve)
@@ -344,7 +376,7 @@ class TestProcessTiled:
     ) -> None:
         calls: list[dict[str, object]] = []
 
-        def fake_solve(**kwargs: object) -> torch.Tensor:
+        def fake_solve(**kwargs: object) -> StripeResult:
             data = kwargs["data"]
             mu1 = kwargs.get("mu1")
             mu2 = kwargs.get("mu2")
@@ -358,7 +390,7 @@ class TestProcessTiled:
                     "mu2": mu2.detach().cpu().clone(),
                 }
             )
-            return data.cpu()
+            return StripeResult(clean=data.cpu(), components=())
 
         monkeypatch.setattr(remover, "_solve", fake_solve)
 
