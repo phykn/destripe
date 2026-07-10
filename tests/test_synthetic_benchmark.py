@@ -91,54 +91,61 @@ def make_acceptance_fixture(
     *,
     weak_projection_left: float,
     clean_psnr: float,
+    levels: tuple[int, ...] = (0,),
 ) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     samples = [f"sample_{index:02d}.png" for index in range(2, 6)]
     for sample in samples:
-        rows.append(
-            {
-                "seed": 1234,
-                "sample": sample,
-                "case_type": "clean",
-                "pattern": "none",
-                "mode": None,
-                "strength": 0.0,
-                "carrier": "additive",
-                "profile_scale": 9,
-                "angle_offset": 0.0,
-                "input_psnr": float("inf"),
-                "output_psnr": clean_psnr,
-                "input_ssim": 1.0,
-                "output_ssim": 1.0,
-                "stripe_projection_left_pct": 0.0,
-            }
-        )
-        for mode in range(5):
-            for strength, psnr_gain, ssim_gain in (
-                (0.01, 0.2, 0.002),
-                (0.03, 1.0, 0.003),
-                (0.06, 4.0, 0.004),
-            ):
-                rows.append(
-                    {
-                        "seed": 1234,
-                        "sample": sample,
-                        "case_type": "synthetic",
-                        "pattern": f"curtain_m{mode}",
-                        "mode": mode,
-                        "strength": strength,
-                        "carrier": "additive",
-                        "profile_scale": 9,
-                        "angle_offset": 0.0,
-                        "input_psnr": 40.0,
-                        "output_psnr": 40.0 + psnr_gain,
-                        "input_ssim": 0.95,
-                        "output_ssim": 0.95 + ssim_gain,
-                        "stripe_projection_left_pct": (
-                            weak_projection_left if strength == 0.01 else 50.0
-                        ),
-                    }
-                )
+        for level in levels:
+            rows.append(
+                {
+                    "seed": 1234,
+                    "sample": sample,
+                    "case_type": "clean",
+                    "pattern": "none",
+                    "mode": None,
+                    "strength": 0.0,
+                    "carrier": "additive",
+                    "profile_scale": 9,
+                    "angle_offset": 0.0,
+                    "level": level,
+                    "input_psnr": float("inf"),
+                    "output_psnr": clean_psnr,
+                    "input_ssim": 1.0,
+                    "output_ssim": 1.0,
+                    "stripe_projection_left_pct": 0.0,
+                }
+            )
+        for spec in default_pattern_specs():
+            for level in levels:
+                for strength, psnr_gain, ssim_gain in (
+                    (0.01, 0.2, 0.002),
+                    (0.03, 1.0, 0.003),
+                    (0.06, 4.0, 0.004),
+                ):
+                    rows.append(
+                        {
+                            "seed": 1234,
+                            "sample": sample,
+                            "case_type": "synthetic",
+                            "pattern": spec.name,
+                            "mode": spec.mode,
+                            "strength": strength,
+                            "carrier": spec.carrier,
+                            "profile_scale": spec.profile_scale,
+                            "angle_offset": spec.angle_offset,
+                            "level": level,
+                            "input_psnr": 40.0,
+                            "output_psnr": 40.0 + psnr_gain,
+                            "input_ssim": 0.95,
+                            "output_ssim": 0.95 + ssim_gain,
+                            "stripe_projection_left_pct": (
+                                weak_projection_left
+                                if strength == 0.01
+                                else 50.0
+                            ),
+                        }
+                    )
     return rows
 
 
@@ -260,6 +267,52 @@ def test_offgrid_and_profile_scale_variants_change_pattern_geometry() -> None:
     assert not np.allclose(offgrid, canonical)
     assert float(offgrid.mean()) == pytest.approx(0.0, abs=1e-12)
     assert float(offgrid.std()) == pytest.approx(1.0)
+
+
+def test_offgrid_pattern_interpolates_rotated_continuous_coordinates() -> None:
+    class DeterministicProfile:
+        def normal(self, *, size: int) -> np.ndarray:
+            positions = np.arange(size, dtype=np.float64)
+            return positions**2 - 0.25 * positions
+
+    shape = (7, 9)
+    mode = 1
+    angle_offset = 7.5
+    profile_scale = 3
+    row_step, col_step = PARALLEL_OFFSETS[mode]
+    normal = np.array([col_step, -row_step], dtype=np.float64)
+    normal /= np.linalg.norm(normal)
+    angle = np.deg2rad(angle_offset)
+    rotation = np.array(
+        [
+            [np.cos(angle), -np.sin(angle)],
+            [np.sin(angle), np.cos(angle)],
+        ]
+    )
+    rotated_normal = rotation @ normal
+    rows, cols = np.indices(shape, dtype=np.float64)
+    coordinates = rotated_normal[0] * rows + rotated_normal[1] * cols
+    coordinates -= float(coordinates.min())
+    line_count = int(np.ceil(coordinates.max())) + 1
+    positions = np.arange(line_count, dtype=np.float64)
+    profile = positions**2 - 0.25 * positions
+    kernel = np.ones(profile_scale, dtype=np.float64) / profile_scale
+    smoothed = np.convolve(profile, kernel, mode="same")
+    expected = np.interp(coordinates, positions, smoothed)
+    expected -= float(expected.mean())
+    expected /= float(expected.std())
+
+    actual = make_stripe_pattern(
+        shape=shape,
+        kind="curtain",
+        mode=mode,
+        rng=DeterministicProfile(),  # type: ignore[arg-type]
+        profile_scale=profile_scale,
+        angle_offset=angle_offset,
+    )
+
+    assert np.any(np.abs(coordinates - np.round(coordinates)) > 1e-6)
+    assert np.allclose(actual, expected)
 
 
 def test_run_benchmark_keeps_real_stripe_sample_out_of_gt_metrics(
@@ -426,7 +479,14 @@ def _canonical_rows_at(
     return [
         row
         for row in rows
-        if row["case_type"] == "synthetic" and row["strength"] == strength
+        if (
+            row["case_type"] == "synthetic"
+            and row["strength"] == strength
+            and row["carrier"] == "additive"
+            and row["profile_scale"] == 9
+            and row["angle_offset"] == 0.0
+            and row["pattern"] == f"curtain_m{row['mode']}"
+        )
     ]
 
 
@@ -436,6 +496,49 @@ def test_acceptance_passes_complete_canonical_fixture() -> None:
     rows = make_acceptance_fixture(weak_projection_left=60.0, clean_psnr=100.0)
 
     assert evaluate_acceptance(rows) == []
+
+
+def test_acceptance_rejects_missing_robustness_pattern() -> None:
+    from benchmarks.acceptance import evaluate_acceptance
+
+    rows = make_acceptance_fixture(weak_projection_left=60.0, clean_psnr=100.0)
+    rows = [row for row in rows if row["pattern"] != "curtain_offgrid_m4"]
+
+    failures = evaluate_acceptance(rows)
+    assert any(
+        "missing" in failure and "curtain_offgrid_m4" in failure
+        for failure in failures
+    )
+
+
+def test_acceptance_rejects_unexpected_robustness_pattern() -> None:
+    from benchmarks.acceptance import evaluate_acceptance
+
+    rows = make_acceptance_fixture(weak_projection_left=60.0, clean_psnr=100.0)
+    unexpected = dict(
+        next(row for row in rows if row["pattern"] == "curtain_offgrid_m4")
+    )
+    unexpected["pattern"] = "curtain_offgrid_m5"
+    unexpected["mode"] = 5
+    rows.append(unexpected)
+
+    assert any(
+        "unexpected pattern curtain_offgrid_m5" in failure
+        for failure in evaluate_acceptance(rows)
+    )
+
+
+def test_acceptance_rejects_cross_combined_robustness_metadata() -> None:
+    from benchmarks.acceptance import evaluate_acceptance
+
+    rows = make_acceptance_fixture(weak_projection_left=60.0, clean_psnr=100.0)
+    narrow = next(row for row in rows if row["pattern"] == "curtain_narrow_m0")
+    narrow["carrier"] = "multiplicative"
+
+    assert any(
+        "metadata" in failure and "curtain_narrow_m0" in failure
+        for failure in evaluate_acceptance(rows)
+    )
 
 
 @pytest.mark.parametrize(
@@ -458,6 +561,22 @@ def test_acceptance_rejects_low_weak_mean_gain(
         row[metric] = float(row[input_metric]) + gain
 
     assert any(message in failure for failure in evaluate_acceptance(rows))
+
+
+def test_acceptance_excludes_duplicate_identity_from_gate_weighting() -> None:
+    from benchmarks.acceptance import evaluate_acceptance
+
+    rows = make_acceptance_fixture(weak_projection_left=60.0, clean_psnr=100.0)
+    weak = _canonical_rows_at(rows, 0.01)
+    for row in weak:
+        row["output_psnr"] = float(row["input_psnr"]) + 0.09
+    duplicate = dict(weak[0])
+    duplicate["output_psnr"] = float(duplicate["input_psnr"]) + 10.0
+    rows.extend(dict(duplicate) for _ in range(20))
+
+    failures = evaluate_acceptance(rows)
+    assert any("duplicate row" in failure for failure in failures)
+    assert any("weak mean PSNR" in failure for failure in failures)
 
 
 def test_acceptance_rejects_low_weak_case_coverage() -> None:
@@ -537,6 +656,36 @@ def test_acceptance_rejects_clean_ssim_below_absolute_gate() -> None:
     assert any("clean SSIM" in failure for failure in evaluate_acceptance(rows))
 
 
+@pytest.mark.parametrize("input_psnr", [100.0, float("inf")])
+def test_acceptance_allows_finite_or_positive_infinite_clean_input_psnr(
+    input_psnr: float,
+) -> None:
+    from benchmarks.acceptance import evaluate_acceptance
+
+    rows = make_acceptance_fixture(weak_projection_left=60.0, clean_psnr=100.0)
+    for row in rows:
+        if row["case_type"] == "clean":
+            row["input_psnr"] = input_psnr
+
+    assert evaluate_acceptance(rows) == []
+
+
+@pytest.mark.parametrize(
+    "input_psnr",
+    [float("nan"), float("-inf"), None, "not-a-number"],
+)
+def test_acceptance_rejects_invalid_clean_input_psnr(input_psnr: object) -> None:
+    from benchmarks.acceptance import evaluate_acceptance
+
+    rows = make_acceptance_fixture(weak_projection_left=60.0, clean_psnr=100.0)
+    clean = next(row for row in rows if row["case_type"] == "clean")
+    clean["input_psnr"] = input_psnr
+
+    assert any(
+        "clean input_psnr" in failure for failure in evaluate_acceptance(rows)
+    )
+
+
 def test_acceptance_failure_order_is_independent_of_row_order() -> None:
     from benchmarks.acceptance import evaluate_acceptance
 
@@ -582,6 +731,31 @@ def test_acceptance_rejects_incomplete_canonical_matrix(
     assert any(message in failure for failure in evaluate_acceptance(rows))
 
 
+def test_acceptance_rejects_missing_sample_level_identity() -> None:
+    from benchmarks.acceptance import evaluate_acceptance
+
+    rows = make_acceptance_fixture(
+        weak_projection_left=60.0,
+        clean_psnr=100.0,
+        levels=(0, 1),
+    )
+    rows = [
+        row
+        for row in rows
+        if not (
+            row["pattern"] == "curtain_m0"
+            and row["strength"] == 0.01
+            and row["sample"] == "sample_02.png"
+            and row["level"] == 1
+        )
+    ]
+
+    assert any(
+        "missing row" in failure and "level 1" in failure
+        for failure in evaluate_acceptance(rows)
+    )
+
+
 def test_acceptance_rejects_nonfinite_synthetic_metric() -> None:
     from benchmarks.acceptance import evaluate_acceptance
 
@@ -592,58 +766,63 @@ def test_acceptance_rejects_nonfinite_synthetic_metric() -> None:
     assert any("non-finite" in failure for failure in evaluate_acceptance(rows))
 
 
-def _append_robustness_rows(
+def _robustness_rows(
     rows: list[dict[str, object]],
-    gains: tuple[float, float, float, float],
-) -> None:
-    for sample, gain in zip(
-        [f"sample_{index:02d}.png" for index in range(2, 6)],
-        gains,
-        strict=True,
-    ):
-        rows.append(
-            {
-                "seed": 1234,
-                "sample": sample,
-                "case_type": "synthetic",
-                "pattern": "curtain_narrow_m0",
-                "mode": 0,
-                "strength": 0.03,
-                "carrier": "additive",
-                "profile_scale": 3,
-                "angle_offset": 0.0,
-                "input_psnr": 40.0,
-                "output_psnr": 40.0 + gain,
-                "input_ssim": 0.95,
-                "output_ssim": 0.95,
-                "stripe_projection_left_pct": 50.0,
-            }
+) -> list[dict[str, object]]:
+    return [
+        row
+        for row in rows
+        if row["case_type"] == "synthetic"
+        and (
+            row["profile_scale"] in {3, 15}
+            or row["carrier"] == "multiplicative"
+            or row["angle_offset"] != 0.0
         )
+    ]
 
 
 def test_acceptance_does_not_apply_canonical_baseline_to_robustness_rows() -> None:
     from benchmarks.acceptance import evaluate_acceptance
 
     rows = make_acceptance_fixture(weak_projection_left=60.0, clean_psnr=100.0)
-    _append_robustness_rows(rows, (0.0, 0.0, 0.0, 0.0))
+    for row in _robustness_rows(rows):
+        row["output_psnr"] = row["input_psnr"]
 
     assert evaluate_acceptance(rows) == []
 
 
-@pytest.mark.parametrize(
-    ("gains", "message"),
-    [
-        ((-0.1, -0.1, -0.1, -0.1), "robustness mean PSNR"),
-        ((-1.1, 0.4, 0.4, 0.4), "robustness PSNR loss"),
-    ],
-)
-def test_acceptance_rejects_robustness_regression(
-    gains: tuple[float, float, float, float],
-    message: str,
-) -> None:
+def test_acceptance_pools_robustness_mean_across_all_variants() -> None:
     from benchmarks.acceptance import evaluate_acceptance
 
     rows = make_acceptance_fixture(weak_projection_left=60.0, clean_psnr=100.0)
-    _append_robustness_rows(rows, gains)
+    for row in _robustness_rows(rows):
+        gain = -0.5 if row["pattern"] == "curtain_narrow_m0" else 0.1
+        row["output_psnr"] = float(row["input_psnr"]) + gain
 
-    assert any(message in failure for failure in evaluate_acceptance(rows))
+    assert evaluate_acceptance(rows) == []
+
+
+def test_acceptance_rejects_negative_pooled_robustness_mean() -> None:
+    from benchmarks.acceptance import evaluate_acceptance
+
+    rows = make_acceptance_fixture(weak_projection_left=60.0, clean_psnr=100.0)
+    for row in _robustness_rows(rows):
+        row["output_psnr"] = float(row["input_psnr"]) - 0.1
+
+    assert any(
+        "robustness mean PSNR" in failure for failure in evaluate_acceptance(rows)
+    )
+
+
+def test_acceptance_rejects_any_robustness_loss_worse_than_one_db() -> None:
+    from benchmarks.acceptance import evaluate_acceptance
+
+    rows = make_acceptance_fixture(weak_projection_left=60.0, clean_psnr=100.0)
+    robustness = _robustness_rows(rows)
+    for row in robustness:
+        row["output_psnr"] = float(row["input_psnr"]) + 0.1
+    robustness[0]["output_psnr"] = float(robustness[0]["input_psnr"]) - 1.1
+
+    assert any(
+        "robustness PSNR loss" in failure for failure in evaluate_acceptance(rows)
+    )

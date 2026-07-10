@@ -1,10 +1,10 @@
 import math
 from collections import defaultdict
-from pathlib import Path
+from dataclasses import dataclass
 from statistics import mean
 
 
-EXPECTED_SAMPLE_STEMS = tuple(f"sample_{index:02d}" for index in range(2, 6))
+EXPECTED_SAMPLES = tuple(f"sample_{index:02d}.png" for index in range(2, 6))
 EXPECTED_STRENGTHS = (0.01, 0.03, 0.06)
 SUPPORTED_MODES = tuple(range(5))
 CANONICAL_BASELINES = {
@@ -12,27 +12,67 @@ CANONICAL_BASELINES = {
     0.06: ("strong", 3.783),
 }
 
-GroupKey = tuple[object, str, str, float | None, int | None]
+
+@dataclass(frozen=True)
+class ExpectedPattern:
+    mode: int
+    carrier: str = "additive"
+    profile_scale: int = 9
+    angle_offset: float = 0.0
+
+
+EXPECTED_PATTERNS = {
+    **{
+        f"curtain_m{mode}": ExpectedPattern(mode=mode)
+        for mode in SUPPORTED_MODES
+    },
+    "sparse_m0": ExpectedPattern(mode=0),
+    "nonstationary_m0": ExpectedPattern(mode=0),
+    "curtain_narrow_m0": ExpectedPattern(mode=0, profile_scale=3),
+    "curtain_broad_m0": ExpectedPattern(mode=0, profile_scale=15),
+    **{
+        f"curtain_multiplicative_m{mode}": ExpectedPattern(
+            mode=mode,
+            carrier="multiplicative",
+        )
+        for mode in SUPPORTED_MODES
+    },
+    **{
+        f"curtain_offgrid_m{mode}": ExpectedPattern(
+            mode=mode,
+            angle_offset=7.5,
+        )
+        for mode in SUPPORTED_MODES
+    },
+}
+CANONICAL_CURTAIN_PATTERNS = frozenset(
+    f"curtain_m{mode}" for mode in SUPPORTED_MODES
+)
+ROBUSTNESS_PATTERNS = frozenset(
+    {
+        "curtain_narrow_m0",
+        "curtain_broad_m0",
+        *(f"curtain_multiplicative_m{mode}" for mode in SUPPORTED_MODES),
+        *(f"curtain_offgrid_m{mode}" for mode in SUPPORTED_MODES),
+    }
+)
+
+RowIdentity = tuple[
+    object,
+    str,
+    str,
+    float | None,
+    int | None,
+    str,
+    int,
+]
 
 
 def evaluate_acceptance(rows: list[dict[str, object]]) -> list[str]:
     """Return deterministic benchmark gate failures; an empty list means pass."""
     failures: list[str] = []
-    groups: dict[GroupKey, list[dict[str, object]]] = defaultdict(list)
-    seeds: set[object] = set()
-
-    for row in rows:
-        seed = _seed(row)
-        seeds.add(seed)
-        key = (
-            seed,
-            str(row.get("case_type", "")),
-            str(row.get("pattern", "")),
-            _optional_float(row.get("strength")),
-            _optional_int(row.get("mode")),
-        )
-        groups[key].append(row)
-        failures.extend(_nonfinite_failures(row, key))
+    evaluated_rows = [row for row in rows if row.get("case_type") != "real"]
+    seeds = {_seed(row) for row in evaluated_rows}
 
     if not seeds:
         return [
@@ -42,55 +82,199 @@ def evaluate_acceptance(rows: list[dict[str, object]]) -> list[str]:
         ]
 
     for seed in sorted(seeds, key=str):
-        seed_rows = [row for row in rows if _seed(row) == seed]
-        canonical = [row for row in seed_rows if _is_canonical_curtain(row)]
-        clean = [row for row in seed_rows if row.get("case_type") == "clean"]
-        robustness = [row for row in seed_rows if _is_robustness(row)]
+        seed_rows = [row for row in evaluated_rows if _seed(row) == seed]
+        validation_failures, unique_rows = _validate_seed_rows(seed, seed_rows)
+        failures.extend(validation_failures)
+        for identity, row in unique_rows:
+            failures.extend(_nonfinite_failures(row, identity))
 
-        failures.extend(_completeness_failures(seed, canonical, clean, groups))
+        clean = [row for _, row in unique_rows if row.get("case_type") == "clean"]
+        canonical = [
+            row
+            for _, row in unique_rows
+            if str(row.get("pattern")) in CANONICAL_CURTAIN_PATTERNS
+        ]
+        robustness = [
+            row
+            for _, row in unique_rows
+            if str(row.get("pattern")) in ROBUSTNESS_PATTERNS
+        ]
         failures.extend(_clean_failures(seed, clean))
         failures.extend(_canonical_failures(seed, canonical))
-        failures.extend(_robustness_failures(seed, robustness, groups))
+        failures.extend(_robustness_failures(seed, robustness))
 
     return sorted(failures)
 
 
-def _completeness_failures(
+def _validate_seed_rows(
     seed: object,
-    canonical: list[dict[str, object]],
-    clean: list[dict[str, object]],
-    groups: dict[GroupKey, list[dict[str, object]]],
-) -> list[str]:
+    rows: list[dict[str, object]],
+) -> tuple[list[str], list[tuple[RowIdentity, dict[str, object]]]]:
     failures: list[str] = []
-    clean_samples = {_sample_stem(row) for row in clean}
-    for sample in EXPECTED_SAMPLE_STEMS:
-        if sample not in clean_samples:
-            failures.append(f"seed {seed}: missing sample {sample} from clean rows")
+    levels = {
+        level
+        for row in rows
+        if row.get("case_type") in {"clean", "synthetic"}
+        and (level := _optional_int(row.get("level"))) is not None
+    }
+    if not levels:
+        failures.append(f"seed {seed}: missing level data")
 
-    present_strengths = {_optional_float(row.get("strength")) for row in canonical}
+    candidates: dict[RowIdentity, list[dict[str, object]]] = defaultdict(list)
+    for row in rows:
+        case_type = str(row.get("case_type", ""))
+        if case_type not in {"clean", "synthetic"}:
+            failures.append(f"seed {seed}: unexpected case_type {case_type!r}")
+            continue
+        level = _optional_int(row.get("level"))
+        if level is None:
+            failures.append(
+                f"seed {seed} sample {row.get('sample', 'unknown')}: "
+                "missing or non-numeric level"
+            )
+            continue
+        sample = str(row.get("sample", ""))
+        if sample not in EXPECTED_SAMPLES:
+            failures.append(f"seed {seed}: unexpected sample {sample!r}")
+            continue
+
+        if case_type == "clean":
+            if not _matches_clean_metadata(row):
+                failures.append(
+                    f"seed {seed} sample {sample} level {level}: "
+                    "metadata mismatch for clean row"
+                )
+                continue
+            identity = (seed, "clean", "none", 0.0, None, sample, level)
+        else:
+            pattern = str(row.get("pattern", ""))
+            expected = EXPECTED_PATTERNS.get(pattern)
+            if expected is None:
+                failures.append(f"seed {seed}: unexpected pattern {pattern}")
+                continue
+            if not _matches_pattern_metadata(row, expected):
+                failures.append(
+                    f"seed {seed} sample {sample} level {level}: metadata mismatch "
+                    f"for {pattern}; expected mode={expected.mode}, "
+                    f"carrier={expected.carrier}, "
+                    f"profile_scale={expected.profile_scale}, "
+                    f"angle_offset={expected.angle_offset}"
+                )
+                continue
+            strength = _normalized_strength(row.get("strength"))
+            if strength is None:
+                failures.append(
+                    f"seed {seed} sample {sample} level {level}: unexpected strength "
+                    f"{row.get('strength')!r} for {pattern}"
+                )
+                continue
+            identity = (
+                seed,
+                "synthetic",
+                pattern,
+                strength,
+                expected.mode,
+                sample,
+                level,
+            )
+        candidates[identity].append(row)
+
+    present_strengths = {
+        identity[3]
+        for identity in candidates
+        if identity[1] == "synthetic"
+    }
     for strength in EXPECTED_STRENGTHS:
         if strength not in present_strengths:
             failures.append(
-                f"seed {seed}: missing strength {strength:.2f} from canonical rows"
+                f"seed {seed}: missing strength {strength:.2f} from synthetic rows"
             )
-
-    present_modes = {_optional_int(row.get("mode")) for row in canonical}
+    present_modes = {
+        identity[4]
+        for identity in candidates
+        if identity[1] == "synthetic"
+    }
     for mode in SUPPORTED_MODES:
         if mode not in present_modes:
-            failures.append(f"seed {seed}: missing mode {mode} from canonical rows")
+            failures.append(f"seed {seed}: missing mode {mode} from synthetic rows")
 
-    for mode in SUPPORTED_MODES:
-        pattern = f"curtain_m{mode}"
-        for strength in EXPECTED_STRENGTHS:
-            key = (seed, "synthetic", pattern, strength, mode)
-            present_samples = {_sample_stem(row) for row in groups.get(key, [])}
-            for sample in EXPECTED_SAMPLE_STEMS:
-                if sample not in present_samples:
-                    failures.append(
-                        f"seed {seed}: missing sample {sample} from "
-                        f"{pattern} strength {strength:.2f}"
+    unique_rows: list[tuple[RowIdentity, dict[str, object]]] = []
+    for identity in _expected_identities(seed, levels):
+        matches = candidates.get(identity, [])
+        if not matches:
+            failures.append(_missing_identity_failure(identity))
+        elif len(matches) > 1:
+            failures.append(
+                f"duplicate row identity ({len(matches)} rows): "
+                f"{_identity_label(identity)}"
+            )
+        else:
+            unique_rows.append((identity, matches[0]))
+    return failures, unique_rows
+
+
+def _expected_identities(seed: object, levels: set[int]) -> list[RowIdentity]:
+    identities: list[RowIdentity] = []
+    for level in sorted(levels):
+        for sample in EXPECTED_SAMPLES:
+            identities.append((seed, "clean", "none", 0.0, None, sample, level))
+        for pattern, metadata in EXPECTED_PATTERNS.items():
+            for strength in EXPECTED_STRENGTHS:
+                for sample in EXPECTED_SAMPLES:
+                    identities.append(
+                        (
+                            seed,
+                            "synthetic",
+                            pattern,
+                            strength,
+                            metadata.mode,
+                            sample,
+                            level,
+                        )
                     )
-    return failures
+    return identities
+
+
+def _missing_identity_failure(identity: RowIdentity) -> str:
+    return (
+        f"seed {identity[0]}: missing row (missing sample {identity[5]} coverage) "
+        f"for pattern {identity[2]}, strength {identity[3]}, mode {identity[4]}, "
+        f"level {identity[6]}"
+    )
+
+
+def _identity_label(identity: RowIdentity) -> str:
+    return (
+        f"seed={identity[0]}, case_type={identity[1]}, pattern={identity[2]}, "
+        f"strength={identity[3]}, mode={identity[4]}, sample={identity[5]}, "
+        f"level={identity[6]}"
+    )
+
+
+def _matches_clean_metadata(row: dict[str, object]) -> bool:
+    return (
+        row.get("pattern") == "none"
+        and _optional_int(row.get("mode")) is None
+        and _is_close(_optional_float(row.get("strength")), 0.0)
+        and row.get("carrier") == "additive"
+        and _optional_int(row.get("profile_scale")) == 9
+        and _is_close(_optional_float(row.get("angle_offset")), 0.0)
+    )
+
+
+def _matches_pattern_metadata(
+    row: dict[str, object],
+    expected: ExpectedPattern,
+) -> bool:
+    return (
+        _optional_int(row.get("mode")) == expected.mode
+        and row.get("carrier") == expected.carrier
+        and _optional_int(row.get("profile_scale")) == expected.profile_scale
+        and _is_close(
+            _optional_float(row.get("angle_offset")),
+            expected.angle_offset,
+        )
+    )
 
 
 def _clean_failures(
@@ -130,7 +314,8 @@ def _canonical_failures(
             )
         if min(weak_psnr) < -1.0:
             failures.append(
-                f"seed {seed}: weak PSNR loss {min(weak_psnr):.3f} dB is worse than -1.000 dB"
+                f"seed {seed}: weak PSNR loss {min(weak_psnr):.3f} dB "
+                "is worse than -1.000 dB"
             )
     if weak_ssim:
         ssim_mean = mean(weak_ssim)
@@ -155,7 +340,9 @@ def _canonical_failures(
             )
 
     for mode in SUPPORTED_MODES:
-        direction_rows = [row for row in weak if _optional_int(row.get("mode")) == mode]
+        direction_rows = [
+            row for row in weak if _optional_int(row.get("mode")) == mode
+        ]
         direction_gains = _gains(direction_rows, "psnr")
         if direction_gains and mean(direction_gains) < 0.0:
             failures.append(
@@ -202,40 +389,30 @@ def _canonical_failures(
 def _robustness_failures(
     seed: object,
     robustness: list[dict[str, object]],
-    groups: dict[GroupKey, list[dict[str, object]]],
 ) -> list[str]:
     failures: list[str] = []
-    robustness_keys = {
-        (
-            seed,
-            "synthetic",
-            str(row.get("pattern", "")),
-            _optional_float(row.get("strength")),
-            _optional_int(row.get("mode")),
+    gains = _gains(robustness, "psnr")
+    if not gains:
+        return failures
+    gain_mean = mean(gains)
+    if gain_mean < 0.0:
+        failures.append(
+            f"seed {seed}: robustness mean PSNR gain {gain_mean:.3f} dB is negative"
         )
-        for row in robustness
-    }
-    for key in sorted(robustness_keys, key=str):
-        group_gains = _gains(groups[key], "psnr")
-        if not group_gains:
-            continue
-        label = f"{key[2]} strength {key[3]} mode {key[4]}"
-        gain_mean = mean(group_gains)
-        if gain_mean < 0.0:
-            failures.append(
-                f"seed {seed}: robustness mean PSNR gain {gain_mean:.3f} dB "
-                f"is negative for {label}"
-            )
-        if min(group_gains) < -1.0:
-            failures.append(
-                f"seed {seed}: robustness PSNR loss {min(group_gains):.3f} dB "
-                f"is worse than -1.000 dB for {label}"
-            )
+    if min(gains) < -1.0:
+        failures.append(
+            f"seed {seed}: robustness PSNR loss {min(gains):.3f} dB "
+            "is worse than -1.000 dB"
+        )
     return failures
 
 
-def _nonfinite_failures(row: dict[str, object], key: GroupKey) -> list[str]:
+def _nonfinite_failures(
+    row: dict[str, object],
+    identity: RowIdentity,
+) -> list[str]:
     case_type = str(row.get("case_type", ""))
+    failures = []
     if case_type == "synthetic":
         metrics = (
             "input_psnr",
@@ -245,6 +422,11 @@ def _nonfinite_failures(row: dict[str, object], key: GroupKey) -> list[str]:
             "stripe_projection_left_pct",
         )
     elif case_type == "clean":
+        if not _valid_clean_input_psnr(row.get("input_psnr")):
+            failures.append(
+                f"seed {identity[0]} sample {identity[5]} level {identity[6]}: "
+                "clean input_psnr must be finite or positive infinity"
+            )
         metrics = (
             "output_psnr",
             "input_ssim",
@@ -254,39 +436,22 @@ def _nonfinite_failures(row: dict[str, object], key: GroupKey) -> list[str]:
     else:
         return []
 
-    failures = []
     for metric in metrics:
         if _finite_number(row.get(metric)) is None:
             failures.append(
-                f"seed {key[0]} sample {row.get('sample', 'unknown')}: "
-                f"non-finite {metric} for {key[2]} strength {key[3]} mode {key[4]}"
+                f"seed {identity[0]} sample {identity[5]} level {identity[6]}: "
+                f"non-finite {metric} for {identity[2]} strength {identity[3]} "
+                f"mode {identity[4]}"
             )
     return failures
 
 
-def _is_canonical_curtain(row: dict[str, object]) -> bool:
-    mode = _optional_int(row.get("mode"))
-    return (
-        row.get("case_type") == "synthetic"
-        and mode in SUPPORTED_MODES
-        and row.get("pattern") == f"curtain_m{mode}"
-        and row.get("carrier") == "additive"
-        and _optional_int(row.get("profile_scale")) == 9
-        and _is_close(_optional_float(row.get("angle_offset")), 0.0)
-    )
-
-
-def _is_robustness(row: dict[str, object]) -> bool:
-    if row.get("case_type") != "synthetic":
+def _valid_clean_input_psnr(value: object) -> bool:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
         return False
-    carrier = row.get("carrier")
-    profile_scale = _optional_int(row.get("profile_scale"))
-    angle_offset = _optional_float(row.get("angle_offset"))
-    return (
-        carrier == "multiplicative"
-        or profile_scale in {3, 15}
-        or (angle_offset is not None and not _is_close(angle_offset, 0.0))
-    )
+    return math.isfinite(number) or number == math.inf
 
 
 def _gains(rows: list[dict[str, object]], metric: str) -> list[float]:
@@ -311,8 +476,12 @@ def _strength_is(row: dict[str, object], expected: float) -> bool:
     return _is_close(_optional_float(row.get("strength")), expected)
 
 
-def _sample_stem(row: dict[str, object]) -> str:
-    return Path(str(row.get("sample", ""))).stem
+def _normalized_strength(value: object) -> float | None:
+    number = _optional_float(value)
+    for expected in EXPECTED_STRENGTHS:
+        if _is_close(number, expected):
+            return expected
+    return None
 
 
 def _seed(row: dict[str, object]) -> object:
