@@ -162,6 +162,18 @@ def test_adaptive_refine_and_stripe_names_are_short_verbs() -> None:
     assert "def tv_cost(" not in stripe_source
 
 
+def test_adaptive_safety_owns_evidence_without_image_loops() -> None:
+    root = Path(__file__).resolve().parents[1] / "src" / "destripe" / "adaptive"
+    safety_path = root / "safety.py"
+
+    assert safety_path.exists()
+    safety_source = safety_path.read_text(encoding="utf-8")
+    assert "class DirectionEvidence:" in safety_source
+    assert "def make_direction_evidence(" in safety_source
+    assert "for row in " not in safety_source
+    assert "for col in " not in safety_source
+
+
 def test_adaptive_direction_score_has_no_self_normalizing_factor() -> None:
     root = Path(__file__).resolve().parents[1] / "src" / "destripe" / "adaptive"
     directions_source = (root / "directions.py").read_text(encoding="utf-8")

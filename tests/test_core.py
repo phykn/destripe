@@ -786,6 +786,32 @@ def test_weighted_shrinkage_all_zero_weights_returns_zero() -> None:
     assert measure_shrinkage(tensor, 0, weights=torch.zeros_like(tensor)) == 0.0
 
 
+def test_direction_evidence_keeps_faint_coherent_stripe() -> None:
+    from destripe.adaptive.safety import make_direction_evidence
+
+    rng = np.random.default_rng(201)
+    image = 0.5 + rng.normal(0.0, 0.002, (96, 96))
+    image += 0.01 * np.sin(np.linspace(0, 12 * np.pi, 96))[None, :]
+
+    evidence = make_direction_evidence(image, directions=(0,))[0]
+
+    assert evidence.reliability >= 0.7
+    assert float(evidence.protection.mean()) < 0.75
+
+
+def test_direction_evidence_protects_curved_structure() -> None:
+    from destripe.adaptive.safety import make_direction_evidence
+
+    rows, cols = np.indices((96, 96))
+    radius = np.sqrt((rows - 48) ** 2 + (cols - 48) ** 2)
+    image = np.exp(-((radius - 24) ** 2) / 3.0)
+
+    evidence = make_direction_evidence(image, directions=(0,))[0]
+    ring = np.abs(radius - 24) < 2
+
+    assert float(evidence.protection.numpy()[ring].mean()) > 0.6
+
+
 class TestAdaptiveRefine:
     def test_measure_shrinkage_uses_full_line_reliability(self) -> None:
         from destripe.adaptive import stripe
