@@ -241,7 +241,8 @@ def test_automatic_applies_profile_through_a_protected_crossing() -> None:
     assert float(protection[46:50].max()) > 0.5
     assert result.direction == 0
     assert result.alpha > 0.0
-    np.testing.assert_allclose(correction[48], correction[24], atol=1e-7)
+    assert not np.array_equal(correction[48], correction[24])
+    np.testing.assert_allclose(correction[48], correction[24], atol=0.001)
 
 
 @pytest.mark.parametrize(
@@ -281,7 +282,7 @@ def _make_frozen_vertical_case(
     strength: float,
     strength_index: int,
 ) -> tuple[np.ndarray, np.ndarray]:
-    encoded = cv2.imread(str(_ASSET_DIR / "sample_02.png"), cv2.IMREAD_UNCHANGED)
+    encoded = cv2.imread(str(_ASSET_DIR / "sample_02.tif"), cv2.IMREAD_GRAYSCALE)
     assert encoded is not None
     clean = encoded.astype(np.float64) / np.iinfo(encoded.dtype).max
 

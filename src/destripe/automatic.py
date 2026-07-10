@@ -1,10 +1,13 @@
 from dataclasses import dataclass
 import math
+import time
 
 import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
+
+from .hybrid import MU2_CANDIDATES, _robust_target_strength, _run_hybrid
 
 
 ALL_DIRECTIONS = (0, 1, 2, 3, 4)
@@ -19,6 +22,9 @@ PARALLEL_OFFSETS = {
 _EPS = 1e-9
 _NORMAL_MAD_SCALE = 0.6744897501960817
 _MIN_RELIABILITY = 0.1
+_MIRRORED_DIRECTIONS = {1: 3, 2: 4, 3: 1, 4: 2}
+_MIN_MIRROR_DOMINANCE = 1.25
+_MIN_TARGET_STRENGTH = MU2_CANDIDATES[0] / 2
 
 
 @dataclass(frozen=True)
@@ -26,6 +32,14 @@ class AutomaticResult:
     clean: np.ndarray
     direction: int
     alpha: float
+    reliability: float
+    mu1: float | None
+    mu2: float | None
+    beta: float
+    iterations: int
+    candidate_count: int
+    detection_seconds: float
+    solver_seconds: float
 
 
 @dataclass(frozen=True)
@@ -40,14 +54,32 @@ class H3Detection:
 
 def automatic_clean(gray: np.ndarray, *, proj: bool) -> AutomaticResult:
     gray_array = _validate_gray(gray)
+    detection_started = time.perf_counter()
     detection = _detect_h3(gray_array)
-    clean = gray_array - detection.target if detection.consistent else gray_array.copy()
-    if proj:
-        clean = np.clip(clean, 0.0, 1.0)
+    detection_seconds = time.perf_counter() - detection_started
+    hybrid = _run_hybrid(
+        gray_array,
+        direction=detection.direction,
+        target=detection.target,
+        protection=detection.protection,
+        reliability=detection.reliability,
+        consistent=detection.consistent,
+        proj=proj,
+    )
+    diagnostics = hybrid.diagnostics
+    clean = np.clip(hybrid.clean, 0.0, 1.0) if proj else hybrid.clean
     return AutomaticResult(
         clean=clean,
         direction=detection.direction,
         alpha=detection.alpha,
+        reliability=detection.reliability,
+        mu1=diagnostics.mu1,
+        mu2=diagnostics.mu2,
+        beta=diagnostics.beta,
+        iterations=diagnostics.iterations,
+        candidate_count=diagnostics.candidate_count,
+        detection_seconds=detection_seconds,
+        solver_seconds=diagnostics.solver_seconds,
     )
 
 
@@ -109,9 +141,18 @@ def _detect_h3(gray_array: np.ndarray) -> H3Detection:
     protection_array = selected_protection.numpy().astype(np.float64, copy=False)
     target = alpha * profile_array
     target_power = float(np.sum(target * target))
+    target_strength = _robust_target_strength(target)
+    mirrored = _MIRRORED_DIRECTIONS.get(selected)
+    mirror_dominance = (
+        math.inf
+        if mirrored is None
+        else reliabilities[selected] / (reliabilities[mirrored] + _EPS)
+    )
     consistent = bool(
         reliabilities[selected] >= _MIN_RELIABILITY
+        and mirror_dominance >= _MIN_MIRROR_DOMINANCE
         and alpha > 0.0
+        and target_strength >= _MIN_TARGET_STRENGTH
         and math.isfinite(target_power)
         and target_power > _EPS
     )
@@ -336,7 +377,7 @@ def _blocked_repeatability(
         profiles.append(np.divide(sums, counts, out=np.zeros_like(sums), where=counts > 0))
         masks.append(counts > 0)
 
-    pairwise: list[float] = []
+    pairwise: list[tuple[float, int, int]] = []
     for first_idx in range(4):
         for second_idx in range(first_idx + 1, 4):
             usable = masks[first_idx] & masks[second_idx]
@@ -350,8 +391,31 @@ def _blocked_repeatability(
             if not math.isfinite(denominator) or denominator <= _EPS:
                 return 0.0
             cosine = float(np.dot(first, second) / denominator)
-            pairwise.append(float(np.clip(cosine, 0.0, 1.0)))
-    return min(pairwise, default=0.0)
+            pairwise.append(
+                (float(np.clip(cosine, 0.0, 1.0)), first_idx, second_idx)
+            )
+
+    parents = list(range(4))
+
+    def find(index: int) -> int:
+        while parents[index] != index:
+            parents[index] = parents[parents[index]]
+            index = parents[index]
+        return index
+
+    selected_edges: list[float] = []
+    for cosine, first_idx, second_idx in sorted(pairwise, reverse=True):
+        first_root = find(first_idx)
+        second_root = find(second_idx)
+        if first_root == second_root or cosine <= 0.0:
+            continue
+        parents[second_root] = first_root
+        selected_edges.append(cosine)
+        if len(selected_edges) == 3:
+            break
+    if len(selected_edges) != 3:
+        return 0.0
+    return min(selected_edges)
 
 
 def _positive_centered_cosine(
