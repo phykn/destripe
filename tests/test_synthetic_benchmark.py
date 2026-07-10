@@ -707,6 +707,17 @@ def test_acceptance_rejects_low_weak_case_coverage() -> None:
     assert any("weak coverage" in failure for failure in evaluate_acceptance(rows))
 
 
+def test_acceptance_requires_every_vertical_weak_case_to_pass_joint_gate() -> None:
+    from benchmarks.acceptance import evaluate_acceptance
+
+    rows = make_acceptance_fixture(weak_projection_left=60.0, clean_psnr=100.0)
+    weak = _vertical_weak_rows(rows)
+    weak[0]["output_psnr"] = float(weak[0]["input_psnr"]) + 0.04
+    weak[0]["output_ssim"] = float(weak[0]["input_ssim"]) + 0.00009
+
+    assert any("weak coverage" in failure for failure in evaluate_acceptance(rows))
+
+
 def test_acceptance_rejects_any_weak_loss_worse_than_one_db() -> None:
     from benchmarks.acceptance import evaluate_acceptance
 

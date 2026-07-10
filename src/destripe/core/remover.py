@@ -7,7 +7,6 @@ import torch
 import torch.nn.functional as F
 
 from .operators import adjoint_dir, adjoint_grad, dir_diff, forward_diff
-from .result import StripeResult
 
 
 DIRECTION_MODES = (0, 1, 2, 3, 4)
@@ -72,8 +71,7 @@ class UniversalStripeRemover:
             tol=tol,
             proj=proj,
             verbose=verbose,
-            keep_components=False,
-        ).clean
+        )
         return clean.squeeze(0) if squeeze_batch else clean
 
     def process_tiled(
@@ -87,53 +85,21 @@ class UniversalStripeRemover:
         verbose: bool = False,
         tile_mus: Sequence[tuple[float, float]] | None = None,
     ) -> torch.Tensor:
-        return self._process_tiled(
-            image=image,
-            tiles=tiles,
-            iterations=iterations,
-            tol=tol,
-            overlap=overlap,
-            proj=proj,
-            verbose=verbose,
-            tile_mus=tile_mus,
-            keep_components=False,
-        ).clean
+        """Destripe a grayscale image tile-by-tile.
 
-    def process_tiled_components(
-        self,
-        image: torch.Tensor | np.ndarray,
-        tiles: int = 1,
-        iterations: int = 500,
-        tol: float = 1e-5,
-        overlap: int = 64,
-        proj: bool = True,
-        verbose: bool = False,
-        tile_mus: Sequence[tuple[float, float]] | None = None,
-    ) -> StripeResult:
-        return self._process_tiled(
-            image=image,
-            tiles=tiles,
-            iterations=iterations,
-            tol=tol,
-            overlap=overlap,
-            proj=proj,
-            verbose=verbose,
-            tile_mus=tile_mus,
-            keep_components=True,
-        )
+        Args:
+            image: Input tensor/array with shape ``(H, W)`` or ``(1, H, W)``.
+            tiles: Number of tiles per image side.
+            iterations: Maximum number of PDHG iterations per tile.
+            tol: Relative convergence tolerance.
+            overlap: Overlap width in pixels before cosine blending.
+            proj: Whether to project the clean component onto ``[0, 1]``.
+            verbose: Whether to print iteration progress.
+            tile_mus: Optional ``(mu1, mu2)`` values in row-major tile order.
 
-    def _process_tiled(
-        self,
-        image: torch.Tensor | np.ndarray,
-        tiles: int,
-        iterations: int,
-        tol: float,
-        overlap: int,
-        proj: bool,
-        verbose: bool,
-        tile_mus: Sequence[tuple[float, float]] | None,
-        keep_components: bool,
-    ) -> StripeResult:
+        Returns:
+            A tensor with shape ``(H, W)``.
+        """
         self._validate_solver_params(iterations=iterations, tol=tol)
         self._validate_tiling_params(tiles=tiles, overlap=overlap)
 
@@ -156,20 +122,20 @@ class UniversalStripeRemover:
 
         orig_h, orig_w = image_2d.shape
         if min(orig_h, orig_w) < 2:
-            return StripeResult(
-                clean=image_2d.clone(),
-                components=(
-                    tuple(torch.zeros_like(image_2d) for _ in self.directions)
-                    if keep_components
-                    else ()
-                ),
-            )
+            return image_2d.clone()
 
         if tiles <= 1:
-            tile_mu1 = tile_mu2 = None
-            if tile_mu_values is not None:
-                tile_mu1, tile_mu2 = tile_mu_values[0]
-            result = self._solve(
+            if tile_mu_values is None:
+                return self.process(
+                    image=image_2d,
+                    iterations=iterations,
+                    tol=tol,
+                    proj=proj,
+                    verbose=verbose,
+                )
+
+            tile_mu1, tile_mu2 = tile_mu_values[0]
+            return self._solve(
                 data=image_2d.unsqueeze(0),
                 iterations=iterations,
                 tol=tol,
@@ -177,14 +143,7 @@ class UniversalStripeRemover:
                 verbose=verbose,
                 mu1=tile_mu1,
                 mu2=tile_mu2,
-                keep_components=keep_components,
-            )
-            return StripeResult(
-                clean=result.clean.squeeze(0),
-                components=tuple(
-                    component.squeeze(0) for component in result.components
-                ),
-            )
+            ).squeeze(0)
 
         pad_bottom = (tiles - orig_h % tiles) % tiles
         pad_right = (tiles - orig_w % tiles) % tiles
@@ -192,19 +151,12 @@ class UniversalStripeRemover:
         padded_w = orig_w + pad_right
         core_h, core_w = padded_h // tiles, padded_w // tiles
         if core_h < 2 or core_w < 2:
-            result = self._solve(
-                data=image_2d.unsqueeze(0),
+            return self.process(
+                image=image_2d,
                 iterations=iterations,
                 tol=tol,
                 proj=proj,
                 verbose=verbose,
-                keep_components=keep_components,
-            )
-            return StripeResult(
-                clean=result.clean.squeeze(0),
-                components=tuple(
-                    component.squeeze(0) for component in result.components
-                ),
             )
 
         padded_image = self._pad_reflect(
@@ -241,77 +193,46 @@ class UniversalStripeRemover:
                 f"{tile_h}x{tile_w}, overlap={overlap_pixels}"
             )
 
-        tile_mu1 = tile_mu2 = None
-        if tile_mu_values is not None:
+        if tile_mu_values is None:
+            cleaned_tiles = self.process(
+                image=tile_tensor,
+                iterations=iterations,
+                tol=tol,
+                proj=proj,
+                verbose=verbose,
+            )
+        else:
             tile_mu1, tile_mu2 = self._make_tile_mu_tensors(
                 tile_mus=tile_mu_values,
                 ref=tile_tensor,
             )
-        result = self._solve(
-            data=tile_tensor,
-            iterations=iterations,
-            tol=tol,
-            proj=proj,
-            verbose=verbose,
-            mu1=tile_mu1,
-            mu2=tile_mu2,
-            keep_components=keep_components,
-        )
+            cleaned_tiles = self._solve(
+                data=tile_tensor,
+                iterations=iterations,
+                tol=tol,
+                proj=proj,
+                verbose=verbose,
+                mu1=tile_mu1,
+                mu2=tile_mu2,
+            )
 
-        clean = self._blend_tiles(
-            result.clean,
-            indices,
-            tiles,
-            core_h,
-            core_w,
-            padded_h,
-            padded_w,
-            overlap_pixels,
-        )[:orig_h, :orig_w]
-        components = tuple(
-            self._blend_tiles(
-                component,
-                indices,
-                tiles,
-                core_h,
-                core_w,
-                padded_h,
-                padded_w,
-                overlap_pixels,
-            )[:orig_h, :orig_w]
-            for component in result.components
-        )
-        return StripeResult(clean=clean, components=components)
-
-    def _blend_tiles(
-        self,
-        tile_batch: torch.Tensor,
-        indices: Sequence[tuple[int, int]],
-        tiles: int,
-        core_h: int,
-        core_w: int,
-        padded_h: int,
-        padded_w: int,
-        overlap_pixels: int,
-    ) -> torch.Tensor:
-        tile_h, tile_w = tile_batch.shape[-2:]
         blend_weight = self._make_cosine_window(
             h=tile_h,
             w=tile_w,
             margin=overlap_pixels,
-        ).to(device=tile_batch.device, dtype=tile_batch.dtype)
+        ).to(device=cleaned_tiles.device, dtype=cleaned_tiles.dtype)
         blended_canvas = torch.zeros(
-            tiles * core_h + 2 * overlap_pixels,
-            tiles * core_w + 2 * overlap_pixels,
-            device=tile_batch.device,
-            dtype=tile_batch.dtype,
+            padded_h + 2 * overlap_pixels,
+            padded_w + 2 * overlap_pixels,
+            device=cleaned_tiles.device,
+            dtype=cleaned_tiles.dtype,
         )
         blend_sum = torch.zeros_like(input=blended_canvas)
 
         for idx, (row, col) in enumerate(indices):
             y0, x0 = row * core_h, col * core_w
             blended_canvas[y0 : y0 + tile_h, x0 : x0 + tile_w] += (
-                tile_batch[idx] * blend_weight
+                cleaned_tiles[idx] * blend_weight
             )
             blend_sum[y0 : y0 + tile_h, x0 : x0 + tile_w] += blend_weight
 
@@ -319,7 +240,7 @@ class UniversalStripeRemover:
         return blended_canvas[
             overlap_pixels : overlap_pixels + padded_h,
             overlap_pixels : overlap_pixels + padded_w,
-        ]
+        ][:orig_h, :orig_w]
 
     @staticmethod
     def _make_tile_mu_tensors(
@@ -378,8 +299,7 @@ class UniversalStripeRemover:
         verbose: bool,
         mu1: torch.Tensor | float | None = None,
         mu2: torch.Tensor | float | None = None,
-        keep_components: bool = False,
-    ) -> StripeResult:
+    ) -> torch.Tensor:
         if data.is_floating_point():
             data = data.to(device=self.device)
         else:
@@ -525,14 +445,7 @@ class UniversalStripeRemover:
         if verbose:
             print("")
 
-        return StripeResult(
-            clean=clean.cpu(),
-            components=(
-                tuple(component.cpu() for component in stripe_components)
-                if keep_components
-                else ()
-            ),
-        )
+        return clean.cpu()
 
     @staticmethod
     def _make_solver_mu_tensor(

@@ -310,9 +310,9 @@ def _canonical_failures(
             for psnr_gain, ssim_gain in paired_weak_gains
         )
         coverage = passing / len(paired_weak_gains)
-        if coverage < 0.75:
+        if coverage < 1.0:
             failures.append(
-                f"seed {seed}: weak coverage {coverage:.1%} < 75.0% "
+                f"seed {seed}: weak coverage {coverage:.1%} < 100.0% "
                 "for PSNR/SSIM gains"
             )
 

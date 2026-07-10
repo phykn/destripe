@@ -73,8 +73,13 @@ def test_core_is_package_with_remover_and_operators() -> None:
     assert (core_root / "__init__.py").exists()
     assert (core_root / "remover.py").exists()
     assert (core_root / "operators.py").exists()
+    assert not (core_root / "result.py").exists()
     assert not (root / "core.py").exists()
     assert "class UniversalStripeRemover" in remover_source
+    assert "StripeResult" not in remover_source
+    assert "process_tiled_components" not in remover_source
+    assert "keep_components" not in remover_source
+    assert "def _process_tiled(" not in remover_source
     assert "def forward_diff(" in operator_source
     assert "def dir_diff(" in operator_source
     assert "def adjoint_1d(" in operator_source
