@@ -1,6 +1,8 @@
 import math
 from collections import defaultdict
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
+from numbers import Integral, Real
 from statistics import mean
 
 
@@ -254,7 +256,7 @@ def _identity_label(identity: RowIdentity) -> str:
 def _matches_clean_metadata(row: dict[str, object]) -> bool:
     return (
         row.get("pattern") == "none"
-        and _optional_int(row.get("mode")) is None
+        and _is_absent(row.get("mode"))
         and _is_close(_optional_float(row.get("strength")), 0.0)
         and row.get("carrier") == "additive"
         and _optional_int(row.get("profile_scale")) == 9
@@ -508,12 +510,28 @@ def _optional_float(value: object) -> float | None:
 
 
 def _optional_int(value: object) -> int | None:
-    if value in {None, ""}:
+    if _is_absent(value) or isinstance(value, bool):
         return None
-    try:
+    if isinstance(value, Integral):
         return int(value)
-    except (TypeError, ValueError):
-        return None
+    if isinstance(value, Real):
+        if not math.isfinite(value):
+            return None
+        integer = int(value)
+        return integer if value == integer else None
+    if isinstance(value, (str, Decimal)):
+        try:
+            number = value if isinstance(value, Decimal) else Decimal(value)
+        except InvalidOperation:
+            return None
+        if not number.is_finite() or number != number.to_integral_value():
+            return None
+        return int(number)
+    return None
+
+
+def _is_absent(value: object) -> bool:
+    return value is None or (isinstance(value, str) and value == "")
 
 
 def _is_close(value: float | None, expected: float) -> bool:

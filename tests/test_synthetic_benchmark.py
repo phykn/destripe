@@ -542,6 +542,69 @@ def test_acceptance_rejects_cross_combined_robustness_metadata() -> None:
 
 
 @pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("mode", 0.5, "metadata mismatch"),
+        ("profile_scale", 9.5, "metadata mismatch"),
+        ("level", 0.5, "level"),
+        ("mode", False, "metadata mismatch"),
+        ("profile_scale", float("inf"), "metadata mismatch"),
+        ("level", float("-inf"), "level"),
+    ],
+)
+def test_acceptance_rejects_non_lossless_integer_metadata(
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    from benchmarks.acceptance import evaluate_acceptance
+
+    rows = make_acceptance_fixture(weak_projection_left=60.0, clean_psnr=100.0)
+    row = next(
+        row
+        for row in rows
+        if row["pattern"] == "curtain_m0"
+        and row["strength"] == 0.01
+        and row["sample"] == "sample_02.png"
+    )
+    row[field] = value
+
+    try:
+        failures = evaluate_acceptance(rows)
+    except (OverflowError, TypeError, ValueError) as error:
+        pytest.fail(f"acceptance must report invalid {field}, not raise {error!r}")
+    assert any(message in failure for failure in failures)
+
+
+@pytest.mark.parametrize("mode", ["junk", float("nan"), float("inf")])
+def test_acceptance_rejects_invalid_clean_mode(mode: object) -> None:
+    from benchmarks.acceptance import evaluate_acceptance
+
+    rows = make_acceptance_fixture(weak_projection_left=60.0, clean_psnr=100.0)
+    clean = next(row for row in rows if row["case_type"] == "clean")
+    clean["mode"] = mode
+
+    try:
+        failures = evaluate_acceptance(rows)
+    except (OverflowError, TypeError, ValueError) as error:
+        pytest.fail(f"acceptance must report invalid clean mode, not raise {error!r}")
+    assert any("metadata mismatch for clean row" in failure for failure in failures)
+
+
+def test_acceptance_accepts_csv_integer_strings_and_blank_clean_mode() -> None:
+    from benchmarks.acceptance import evaluate_acceptance
+
+    rows = make_acceptance_fixture(weak_projection_left=60.0, clean_psnr=100.0)
+    for row in rows:
+        row["seed"] = str(row["seed"])
+        row["profile_scale"] = str(row["profile_scale"])
+        row["level"] = str(row["level"])
+        row["mode"] = "" if row["case_type"] == "clean" else str(row["mode"])
+
+    assert evaluate_acceptance(rows) == []
+
+
+@pytest.mark.parametrize(
     ("metric", "gain", "message"),
     [
         ("output_psnr", 0.09, "weak mean PSNR"),
