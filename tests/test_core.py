@@ -812,6 +812,97 @@ def test_direction_evidence_protects_curved_structure() -> None:
     assert float(evidence.protection.numpy()[ring].mean()) > 0.6
 
 
+def test_safe_selection_accepts_stripe_crossing_structure() -> None:
+    from destripe.adaptive.safety import select_clean
+
+    rows, cols = np.indices((96, 96))
+    structure = 0.2 * np.exp(-((rows - 48) ** 2 + (cols - 48) ** 2) / 250.0)
+    stripe = 0.01 * np.sin(np.linspace(0, 10 * np.pi, 96))[None, :]
+    gray = 0.5 + structure + stripe
+
+    result = select_clean(
+        gray=gray,
+        solver_clean=gray - stripe,
+        components=(np.broadcast_to(stripe, gray.shape).copy(),),
+        directions=(0,),
+        proj=False,
+    )
+
+    assert result.alphas[0] > 0.7
+    assert np.mean((result.clean - (gray - stripe)) ** 2) < np.mean(stripe**2) * 0.2
+
+
+def test_choose_alpha_uses_reliability_once() -> None:
+    from destripe.adaptive import safety
+
+    profile = torch.tensor(
+        [[-0.02, 0.0, 0.02], [-0.02, 0.0, 0.02]],
+        dtype=torch.float32,
+    )
+
+    alpha = safety.choose_alpha(
+        input_profile=profile,
+        proposal_profile=profile,
+        reliability=0.5,
+        leakage=0.0,
+    )
+
+    assert alpha == pytest.approx(0.5, abs=1e-6)
+
+
+def test_choose_alpha_noops_uncorrelated_profile() -> None:
+    from destripe.adaptive.safety import choose_alpha
+
+    alpha = choose_alpha(
+        input_profile=torch.tensor([[-1.0, 0.0, 1.0]]),
+        proposal_profile=torch.tensor([[1.0, 0.0, 1.0]]),
+        reliability=1.0,
+        leakage=0.0,
+    )
+
+    assert alpha == 0.0
+
+
+@pytest.mark.parametrize(
+    ("components", "directions"),
+    [
+        ((), (0,)),
+        ((np.zeros((3, 2)),), (0,)),
+        ((np.full((3, 3), np.nan),), (0,)),
+    ],
+)
+def test_safe_selection_rejects_invalid_components(
+    components: tuple[np.ndarray, ...],
+    directions: tuple[int, ...],
+) -> None:
+    from destripe.adaptive.safety import select_clean
+
+    gray = np.zeros((3, 3))
+
+    with pytest.raises(ValueError, match="components"):
+        select_clean(
+            gray=gray,
+            solver_clean=gray,
+            components=components,
+            directions=directions,
+            proj=False,
+        )
+
+
+def test_parallel_differences_keep_shape_without_wrapping() -> None:
+    from destripe.adaptive.safety import _parallel_diff, _second_parallel_diff
+
+    tensor = torch.tensor([[0.0], [2.0], [1.0], [3.0]])
+
+    first = _parallel_diff(tensor, mode=0)
+    second = _second_parallel_diff(tensor, mode=0)
+
+    assert first.shape == tensor.shape
+    assert second.shape == tensor.shape
+    assert torch.equal(first[:, 0], torch.tensor([0.0, 2.0, -1.0, 2.0]))
+    assert torch.equal(second[:, 0], torch.tensor([0.0, 0.0, -3.0, 3.0]))
+
+
 class TestAdaptiveRefine:
     def test_measure_shrinkage_uses_full_line_reliability(self) -> None:
         from destripe.adaptive import stripe
@@ -856,6 +947,7 @@ class TestAdaptiveRefine:
         refined = refine_clean(
             gray=gray,
             clean=gray,
+            components=(np.zeros_like(gray),),
             directions=(0,),
             proj=False,
         )
@@ -877,6 +969,7 @@ class TestAdaptiveRefine:
         refined = refine_clean(
             gray=clean,
             clean=clean,
+            components=(np.zeros_like(clean),),
             directions=(0,),
             proj=False,
         )
@@ -976,14 +1069,18 @@ class TestDestripe:
                 directions=(0,), mu1=1 / 3, mu2=1 / 300, confidence=1.0
             )
 
-        original = UniversalStripeRemover.process_tiled
+        original = UniversalStripeRemover.process_tiled_components
 
-        def spy_process_tiled(self, *args, **kwargs):
+        def spy_process_tiled_components(self, *args, **kwargs):
             seen["tile_mus"] = kwargs.get("tile_mus")
             return original(self, *args, **kwargs)
 
         monkeypatch.setattr(ops, "estimate_adaptive_params", fake_estimate)
-        monkeypatch.setattr(UniversalStripeRemover, "process_tiled", spy_process_tiled)
+        monkeypatch.setattr(
+            UniversalStripeRemover,
+            "process_tiled_components",
+            spy_process_tiled_components,
+        )
 
         img = np.random.default_rng(18).random((32, 32))
         result = destripe(img, adaptive=3, iterations=5, tiles=2, overlap=4)
@@ -1143,8 +1240,14 @@ class TestDestripe:
             def __init__(self, **_: object) -> None:
                 pass
 
-            def process_tiled(self, image: np.ndarray, **_: object) -> torch.Tensor:
-                return torch.as_tensor(image)
+            def process_tiled_components(
+                self, image: np.ndarray, **_: object
+            ) -> StripeResult:
+                tensor = torch.as_tensor(image)
+                return StripeResult(
+                    clean=tensor,
+                    components=(torch.zeros_like(tensor),),
+                )
 
         monkeypatch.setattr(destripe_ops, "estimate_adaptive_params", fake_estimate)
         monkeypatch.setattr(destripe_ops, "UniversalStripeRemover", FakeRemover)
@@ -1319,8 +1422,14 @@ class TestDestripe:
                     }
                 )
 
-            def process_tiled(self, image: np.ndarray, **_: object) -> torch.Tensor:
-                return torch.as_tensor(image)
+            def process_tiled_components(
+                self, image: np.ndarray, **_: object
+            ) -> StripeResult:
+                tensor = torch.as_tensor(image)
+                return StripeResult(
+                    clean=tensor,
+                    components=(torch.zeros_like(tensor),),
+                )
 
         monkeypatch.setattr(destripe_ops, "UniversalStripeRemover", FakeRemover)
         monkeypatch.setattr(destripe_ops, "estimate_adaptive_params", fake_estimate)
@@ -1349,57 +1458,48 @@ class TestDestripe:
             {"shape": img.shape, "level": 2, "fixed_directions": None}
         ]
 
-    def test_adaptive_refines_clean_after_solver(
+    def test_adaptive_uses_one_component_solve(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        from destripe import ops
         from destripe.adaptive import AdaptiveParams
+        from destripe.core.result import StripeResult
 
-        seen: dict[str, object] = {}
+        calls = {"components": 0, "plain": 0}
 
-        def fake_estimate(
-            gray: np.ndarray, *, level: int, fixed_directions=None
-        ) -> AdaptiveParams:
-            assert level == 2
-            return AdaptiveParams(
+        monkeypatch.setattr(
+            ops,
+            "estimate_adaptive_params",
+            lambda *_args, **_kwargs: AdaptiveParams(
                 directions=(0,), mu1=1 / 4, mu2=1 / 300, confidence=1.0
-            )
-
-        def fake_refine(
-            *,
-            gray: np.ndarray,
-            clean: np.ndarray,
-            directions: tuple[int, ...],
-            proj: bool,
-        ) -> np.ndarray:
-            seen["directions"] = directions
-            seen["proj"] = proj
-            return clean - 0.1
+            ),
+        )
 
         class FakeRemover:
-            def __init__(
-                self,
-                mu1: float,
-                mu2: float,
-                device: torch.device | str | None = None,
-                directions: object = None,
-            ) -> None:
+            def __init__(self, **_: object) -> None:
                 pass
 
             def process_tiled(self, image: np.ndarray, **_: object) -> torch.Tensor:
+                calls["plain"] += 1
                 return torch.as_tensor(image)
 
-        monkeypatch.setattr(destripe_ops, "estimate_adaptive_params", fake_estimate)
-        monkeypatch.setattr(destripe_ops, "refine_clean", fake_refine)
-        monkeypatch.setattr(destripe_ops, "UniversalStripeRemover", FakeRemover)
+            def process_tiled_components(
+                self, image: np.ndarray, **_: object
+            ) -> StripeResult:
+                calls["components"] += 1
+                tensor = torch.as_tensor(image)
+                return StripeResult(
+                    clean=tensor,
+                    components=(torch.zeros_like(tensor),),
+                )
 
-        img = np.random.default_rng(21).random((8, 8))
-        result = destripe(img, adaptive=2, iterations=1, proj=False)
+        monkeypatch.setattr(ops, "UniversalStripeRemover", FakeRemover)
 
-        assert seen == {
-            "directions": (0,),
-            "proj": False,
-        }
-        assert np.allclose(result, img - 0.1 * (img.max() - img.min()))
+        image = np.random.default_rng(203).random((24, 24))
+        result = destripe(image, adaptive=2, iterations=1)
+
+        assert result.shape == image.shape
+        assert calls == {"components": 1, "plain": 0}
 
     def test_constant_returns_copy(self) -> None:
         img = np.full((32, 32), 128, dtype=np.uint8)

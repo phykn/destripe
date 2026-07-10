@@ -190,20 +190,27 @@ def _destripe_grayscale(
             directions=resolved_directions,
         )
     solver_input = np.asarray(processed_gray, dtype=np.float32)
-    solver_clean = remover.process_tiled(
-        image=solver_input,
-        tiles=tiles,
-        iterations=iterations,
-        tol=tol,
-        overlap=overlap,
-        proj=proj,
-        verbose=verbose,
-        tile_mus=tile_mus,
-    ).numpy()
-    if adaptive_level is not None:
+    solver_kwargs = {
+        "image": solver_input,
+        "tiles": tiles,
+        "iterations": iterations,
+        "tol": tol,
+        "overlap": overlap,
+        "proj": proj,
+        "verbose": verbose,
+        "tile_mus": tile_mus,
+    }
+    if adaptive_level is None:
+        solver_clean = remover.process_tiled(**solver_kwargs).numpy()
+    else:
+        solver_result = remover.process_tiled_components(**solver_kwargs)
+        solver_clean = solver_result.clean.numpy()
         solver_clean = refine_clean(
             gray=processed_gray,
             clean=solver_clean,
+            components=tuple(
+                component.numpy() for component in solver_result.components
+            ),
             directions=resolved_directions,
             proj=proj,
         )
