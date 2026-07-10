@@ -707,6 +707,45 @@ def test_robust_projection_ignores_protected_local_structure() -> None:
     assert torch.allclose(projected[:, 5], torch.full((32,), 0.02), atol=1e-4)
 
 
+def test_robust_projection_reweights_unprotected_outlier() -> None:
+    from destripe.adaptive.stripe import project_robust
+
+    tensor = torch.zeros((32, 4), dtype=torch.float32)
+    tensor[:, 1] = 0.02
+    tensor[0, 1] = 1.0
+
+    projected = project_robust(tensor, mode=0, weights=torch.ones_like(tensor))
+
+    assert torch.allclose(projected[:, 1], torch.full((32,), 0.02), atol=5e-3)
+
+
+def test_robust_projection_is_invariant_to_fractional_weight_scale() -> None:
+    from destripe.adaptive.stripe import project_robust
+
+    tensor = torch.zeros((32, 4), dtype=torch.float32)
+    tensor[:, 1] = 0.02
+    tensor[0, 1] = 1.0
+    weights = torch.linspace(0.2, 1.0, 32)[:, None].expand_as(tensor)
+
+    projected = project_robust(tensor, mode=0, weights=weights)
+    scaled = project_robust(tensor, mode=0, weights=weights * 1e-15)
+
+    assert torch.allclose(scaled, projected, atol=1e-6, rtol=1e-6)
+
+
+def test_robust_projection_zero_weight_line_returns_finite_zero() -> None:
+    from destripe.adaptive.stripe import project_robust
+
+    tensor = torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float16)
+    weights = torch.ones_like(tensor)
+    weights[:, 1] = 0.0
+
+    projected = project_robust(tensor, mode=0, weights=weights)
+
+    assert torch.isfinite(projected[:, 1]).all()
+    assert torch.equal(projected[:, 1], torch.zeros(2, dtype=torch.float16))
+
+
 def test_weighted_shrinkage_ignores_protected_mismatch() -> None:
     from destripe.adaptive.stripe import measure_shrinkage
 
@@ -717,6 +756,34 @@ def test_weighted_shrinkage_ignores_protected_mismatch() -> None:
     weights[[0, 2], 3] = 0.0
 
     assert measure_shrinkage(tensor, 0, weights=weights) > 0.9
+
+
+def test_weighted_shrinkage_is_invariant_to_fractional_weight_scale() -> None:
+    from destripe.adaptive.stripe import measure_shrinkage
+
+    tensor = torch.tensor(
+        [
+            [-1.0, 0.0, 1.0],
+            [-0.5, 0.0, 0.5],
+            [-1.0, 0.0, 1.0],
+            [-0.5, 0.0, 0.5],
+        ],
+        dtype=torch.float32,
+    )
+    weights = torch.full_like(tensor, 0.25)
+
+    shrinkage = measure_shrinkage(tensor, 0, weights=weights)
+    scaled = measure_shrinkage(tensor, 0, weights=weights * 1e-15)
+
+    assert scaled == pytest.approx(shrinkage, abs=1e-6)
+
+
+def test_weighted_shrinkage_all_zero_weights_returns_zero() -> None:
+    from destripe.adaptive.stripe import measure_shrinkage
+
+    tensor = torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float16)
+
+    assert measure_shrinkage(tensor, 0, weights=torch.zeros_like(tensor)) == 0.0
 
 
 class TestAdaptiveRefine:

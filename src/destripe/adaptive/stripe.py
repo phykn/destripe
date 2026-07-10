@@ -50,7 +50,8 @@ def _project_weighted(
     counts = torch.zeros_like(sums)
     sums.scatter_add_(0, inverse, flat_weights * values)
     counts.scatter_add_(0, inverse, flat_weights)
-    return (sums / counts.clamp(min=EPS))[inverse].reshape(tensor.shape)
+    denominator = torch.where(counts == 0, torch.ones_like(counts), counts)
+    return (sums / denominator)[inverse].reshape(tensor.shape)
 
 
 def measure_shrinkage(
@@ -80,7 +81,8 @@ def measure_shrinkage(
         selected_weights = flat_weights[selected]
         sums.scatter_add_(0, inverse[selected], selected_weights * values[selected])
         counts.scatter_add_(0, inverse[selected], selected_weights)
-        profiles.append(sums / counts.clamp(min=EPS))
+        denominator = torch.where(counts == 0, torch.ones_like(counts), counts)
+        profiles.append(sums / denominator)
         masks.append(counts > 0)
 
     usable = masks[0] & masks[1]
