@@ -1,6 +1,7 @@
 import math
 import numbers
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 import numpy as np
 import torch
@@ -10,6 +11,12 @@ from .operators import adjoint_dir, adjoint_grad, dir_diff, forward_diff
 
 
 DIRECTION_MODES = (0, 1, 2, 3, 4)
+
+
+@dataclass(frozen=True)
+class _SolveResult:
+    clean: torch.Tensor
+    iterations: int
 
 
 class UniversalStripeRemover:
@@ -51,6 +58,23 @@ class UniversalStripeRemover:
         Returns:
             Clean estimate with the same rank as ``image``.
         """
+        return self._process_with_info(
+            image,
+            iterations=iterations,
+            tol=tol,
+            proj=proj,
+            verbose=verbose,
+        ).clean
+
+    def _process_with_info(
+        self,
+        image: torch.Tensor | np.ndarray,
+        *,
+        iterations: int,
+        tol: float,
+        proj: bool,
+        verbose: bool = False,
+    ) -> _SolveResult:
         self._validate_solver_params(iterations=iterations, tol=tol)
 
         input_tensor = self._convert_to_tensor(x=image)
@@ -59,20 +83,21 @@ class UniversalStripeRemover:
         if input_tensor.dim() not in {2, 3}:
             raise ValueError("image must have shape (H, W) or (N, H, W).")
         if min(input_tensor.shape[-2:]) < 2:
-            return input_tensor.clone()
+            return _SolveResult(clean=input_tensor.clone(), iterations=0)
 
         squeeze_batch = input_tensor.dim() == 2
         if squeeze_batch:
             input_tensor = input_tensor.unsqueeze(0)
 
-        clean = self._solve(
+        result = self._solve(
             data=input_tensor,
             iterations=iterations,
             tol=tol,
             proj=proj,
             verbose=verbose,
         )
-        return clean.squeeze(0) if squeeze_batch else clean
+        clean = result.clean.squeeze(0) if squeeze_batch else result.clean
+        return _SolveResult(clean=clean, iterations=result.iterations)
 
     def process_tiled(
         self,
@@ -143,7 +168,7 @@ class UniversalStripeRemover:
                 verbose=verbose,
                 mu1=tile_mu1,
                 mu2=tile_mu2,
-            ).squeeze(0)
+            ).clean.squeeze(0)
 
         pad_bottom = (tiles - orig_h % tiles) % tiles
         pad_right = (tiles - orig_w % tiles) % tiles
@@ -214,7 +239,7 @@ class UniversalStripeRemover:
                 verbose=verbose,
                 mu1=tile_mu1,
                 mu2=tile_mu2,
-            )
+            ).clean
 
         blend_weight = self._make_cosine_window(
             h=tile_h,
@@ -299,7 +324,7 @@ class UniversalStripeRemover:
         verbose: bool,
         mu1: torch.Tensor | float | None = None,
         mu2: torch.Tensor | float | None = None,
-    ) -> torch.Tensor:
+    ) -> _SolveResult:
         if data.is_floating_point():
             data = data.to(device=self.device)
         else:
@@ -341,8 +366,10 @@ class UniversalStripeRemover:
         directional_diff = torch.empty_like(input=data)
         grad_norm = torch.empty_like(input=data)
 
+        executed_iterations = 0
         with torch.no_grad():
             for iteration_idx in range(iterations):
+                executed_iterations = iteration_idx + 1
                 if verbose:
                     print(f"\rIteration: {iteration_idx + 1} / {iterations}", end="")
 
@@ -445,7 +472,7 @@ class UniversalStripeRemover:
         if verbose:
             print("")
 
-        return clean.cpu()
+        return _SolveResult(clean=clean.cpu(), iterations=executed_iterations)
 
     @staticmethod
     def _make_solver_mu_tensor(

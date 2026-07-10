@@ -9,6 +9,7 @@ import destripe.ops as destripe_ops
 from destripe import preprocess
 from destripe import UniversalStripeRemover, destripe
 from destripe.core import operators
+from destripe.core.remover import _SolveResult
 
 
 @pytest.fixture()
@@ -120,6 +121,30 @@ class TestProcess:
         assert result.dtype == torch.float32
         assert result.min() >= 0.0
         assert result.max() <= 1.0
+
+    def test_private_info_reports_early_stop_without_changing_public_return(
+        self,
+    ) -> None:
+        remover = UniversalStripeRemover(device="cpu", directions=[0])
+        image = torch.full((24, 28), 0.4)
+
+        info = remover._process_with_info(
+            image,
+            iterations=100,
+            tol=1e-5,
+            proj=True,
+        )
+        public = remover.process(
+            image,
+            iterations=100,
+            tol=1e-5,
+            proj=True,
+        )
+
+        assert torch.is_tensor(public)
+        assert torch.is_tensor(info.clean)
+        assert 1 <= info.iterations < 100
+        torch.testing.assert_close(public, info.clean)
 
     def test_batch_3d(self, remover: UniversalStripeRemover) -> None:
         img = torch.rand(3, 32, 32)
@@ -346,7 +371,7 @@ class TestProcessTiled:
     ) -> None:
         calls: list[dict[str, object]] = []
 
-        def fake_solve(**kwargs: object) -> torch.Tensor:
+        def fake_solve(**kwargs: object) -> _SolveResult:
             data = kwargs["data"]
             mu1 = kwargs.get("mu1")
             mu2 = kwargs.get("mu2")
@@ -360,7 +385,7 @@ class TestProcessTiled:
                     "mu2": mu2.detach().cpu().clone(),
                 }
             )
-            return data.cpu()
+            return _SolveResult(clean=data.cpu(), iterations=1)
 
         monkeypatch.setattr(remover, "_solve", fake_solve)
 
