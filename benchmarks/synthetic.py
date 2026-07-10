@@ -168,6 +168,57 @@ def make_stripe_pattern(
     return pattern / scale
 
 
+def make_support_mask(
+    shape: tuple[int, int],
+    *,
+    kind: str,
+    mode: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Make a deterministic binary along-stripe support mask."""
+    if len(shape) != 2 or min(shape) < 2:
+        raise ValueError("shape must contain two dimensions of at least 2 pixels.")
+    if mode not in PARALLEL_OFFSETS:
+        raise ValueError("mode must be an integer from 0 through 4.")
+    if kind not in {"outer_quarters", "first_half", "center", "segments"}:
+        raise ValueError(
+            "kind must be outer_quarters, first_half, center, or segments."
+        )
+
+    rows, cols = np.indices(shape, dtype=np.int64)
+    row_step, col_step = PARALLEL_OFFSETS[mode]
+    line_ids = col_step * rows - row_step * cols
+    along = row_step * rows + col_step * cols
+    shifted_lines = line_ids - int(line_ids.min())
+    line_count = int(shifted_lines.max()) + 1
+    minima = np.full(line_count, np.inf, dtype=np.float64)
+    maxima = np.full(line_count, -np.inf, dtype=np.float64)
+    np.minimum.at(minima, shifted_lines, along)
+    np.maximum.at(maxima, shifted_lines, along)
+    span = maxima[shifted_lines] - minima[shifted_lines]
+    position = np.divide(
+        along - minima[shifted_lines],
+        span,
+        out=np.full(shape, 0.5, dtype=np.float64),
+        where=span > 0,
+    )
+
+    if kind == "outer_quarters":
+        active = (position <= 0.25) | (position >= 0.75)
+    elif kind == "first_half":
+        active = position <= 0.5
+    elif kind == "center":
+        active = (position >= 0.25) & (position <= 0.75)
+    else:
+        starts = np.array((0.04, 0.34, 0.80)) + rng.uniform(0.0, 0.04, size=3)
+        widths = rng.uniform(0.07, 0.11, size=3)
+        active = np.zeros(shape, dtype=bool)
+        for start, width in zip(starts, widths, strict=True):
+            active |= (position >= start) & (position <= start + width)
+
+    return active.astype(np.float64)
+
+
 def load_samples(asset_dir: str | Path) -> list[BenchmarkImage]:
     root = Path(asset_dir)
     extensions = {".jpeg", ".jpg", ".png", ".tif", ".tiff"}

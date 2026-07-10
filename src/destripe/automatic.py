@@ -18,6 +18,7 @@ PARALLEL_OFFSETS = {
 
 _EPS = 1e-9
 _NORMAL_MAD_SCALE = 0.6744897501960817
+_MIN_RELIABILITY = 0.1
 
 
 @dataclass(frozen=True)
@@ -27,8 +28,30 @@ class AutomaticResult:
     alpha: float
 
 
+@dataclass(frozen=True)
+class H3Detection:
+    direction: int
+    target: np.ndarray
+    protection: np.ndarray
+    reliability: float
+    alpha: float
+    consistent: bool
+
+
 def automatic_clean(gray: np.ndarray, *, proj: bool) -> AutomaticResult:
     gray_array = _validate_gray(gray)
+    detection = _detect_h3(gray_array)
+    clean = gray_array - detection.target if detection.consistent else gray_array.copy()
+    if proj:
+        clean = np.clip(clean, 0.0, 1.0)
+    return AutomaticResult(
+        clean=clean,
+        direction=detection.direction,
+        alpha=detection.alpha,
+    )
+
+
+def _detect_h3(gray_array: np.ndarray) -> H3Detection:
     tensor = torch.as_tensor(gray_array, dtype=torch.float32)
     high_pass = _extract_high_pass(tensor)
     blurred = cv2.GaussianBlur(
@@ -83,10 +106,26 @@ def automatic_clean(gray: np.ndarray, *, proj: bool) -> AutomaticResult:
     )
 
     profile_array = selected_profile.numpy().astype(np.float64, copy=False)
-    clean = gray_array - alpha * profile_array
-    if proj:
-        clean = np.clip(clean, 0.0, 1.0)
-    return AutomaticResult(clean=clean, direction=selected, alpha=alpha)
+    protection_array = selected_protection.numpy().astype(np.float64, copy=False)
+    target = alpha * profile_array
+    target_power = float(np.sum(target * target))
+    consistent = bool(
+        reliabilities[selected] >= _MIN_RELIABILITY
+        and alpha > 0.0
+        and math.isfinite(target_power)
+        and target_power > _EPS
+    )
+    if not consistent:
+        target = np.zeros_like(gray_array)
+        alpha = 0.0
+    return H3Detection(
+        direction=selected,
+        target=target,
+        protection=protection_array,
+        reliability=reliabilities[selected],
+        alpha=alpha,
+        consistent=consistent,
+    )
 
 
 def _validate_gray(gray: np.ndarray) -> np.ndarray:
@@ -281,7 +320,13 @@ def _blocked_repeatability(
     flat_weights = np.clip(safe.reshape(-1), 0.0, 1.0)
     profiles: list[np.ndarray] = []
     masks: list[np.ndarray] = []
-    for selected in (position <= 0.25, position >= 0.75):
+    quarter_masks = (
+        position <= 0.25,
+        (position > 0.25) & (position <= 0.5),
+        (position > 0.5) & (position <= 0.75),
+        position > 0.75,
+    )
+    for selected in quarter_masks:
         sums = np.zeros(unique.size, dtype=np.float64)
         counts = np.zeros(unique.size, dtype=np.float64)
         selected_inverse = inverse[selected]
@@ -291,19 +336,22 @@ def _blocked_repeatability(
         profiles.append(np.divide(sums, counts, out=np.zeros_like(sums), where=counts > 0))
         masks.append(counts > 0)
 
-    usable = masks[0] & masks[1]
-    if int(np.count_nonzero(usable)) < 2:
-        return 0.0
-    first = profiles[0][usable]
-    second = profiles[1][usable]
-    first = first - float(first.mean())
-    second = second - float(second.mean())
-    full = (first + second) / 2.0
-    variance = float(np.mean(full * full))
-    if variance <= _EPS:
-        return 0.0
-    covariance = float(np.mean(first * second))
-    return float(np.clip(covariance / variance, 0.0, 1.0))
+    pairwise: list[float] = []
+    for first_idx in range(4):
+        for second_idx in range(first_idx + 1, 4):
+            usable = masks[first_idx] & masks[second_idx]
+            if int(np.count_nonzero(usable)) < 2:
+                return 0.0
+            first = profiles[first_idx][usable]
+            second = profiles[second_idx][usable]
+            first -= float(first.mean())
+            second -= float(second.mean())
+            denominator = float(np.linalg.norm(first) * np.linalg.norm(second))
+            if not math.isfinite(denominator) or denominator <= _EPS:
+                return 0.0
+            cosine = float(np.dot(first, second) / denominator)
+            pairwise.append(float(np.clip(cosine, 0.0, 1.0)))
+    return min(pairwise, default=0.0)
 
 
 def _positive_centered_cosine(

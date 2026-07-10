@@ -14,6 +14,7 @@ from benchmarks.synthetic import (
     diagnostic_summary_lines,
     inject_stripe,
     load_samples,
+    make_support_mask,
     main,
     make_stripe_pattern,
     run_benchmark,
@@ -44,6 +45,46 @@ def test_curtain_pattern_is_constant_along_requested_direction(mode: int) -> Non
     assert np.allclose(first, second)
     assert float(pattern.mean()) == pytest.approx(0.0, abs=1e-12)
     assert float(pattern.std()) == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("mode", range(5))
+@pytest.mark.parametrize(
+    "kind",
+    ("outer_quarters", "first_half", "center", "segments"),
+)
+def test_interrupted_support_mask_has_clean_and_active_regions(
+    kind: str,
+    mode: int,
+) -> None:
+    mask = make_support_mask(
+        (96, 104),
+        kind=kind,
+        mode=mode,
+        rng=np.random.default_rng(731),
+    )
+
+    assert mask.shape == (96, 104)
+    assert mask.dtype == np.float64
+    assert np.any(mask == 0.0)
+    assert np.any(mask == 1.0)
+    assert set(np.unique(mask)) == {0.0, 1.0}
+
+
+def test_interrupted_support_mask_is_deterministic() -> None:
+    first = make_support_mask(
+        (96, 104),
+        kind="segments",
+        mode=3,
+        rng=np.random.default_rng(731),
+    )
+    second = make_support_mask(
+        (96, 104),
+        kind="segments",
+        mode=3,
+        rng=np.random.default_rng(731),
+    )
+
+    np.testing.assert_array_equal(first, second)
 
 
 def test_load_samples_reserves_sample_one_for_real_stripe(tmp_path: Path) -> None:
