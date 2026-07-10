@@ -28,7 +28,7 @@ class AutomaticResult:
 
 
 def automatic_clean(gray: np.ndarray, *, proj: bool) -> AutomaticResult:
-    gray_array = np.asarray(gray, dtype=np.float64)
+    gray_array = _validate_gray(gray)
     tensor = torch.as_tensor(gray_array, dtype=torch.float32)
     high_pass = _extract_high_pass(tensor)
     blurred = cv2.GaussianBlur(
@@ -87,6 +87,22 @@ def automatic_clean(gray: np.ndarray, *, proj: bool) -> AutomaticResult:
     if proj:
         clean = np.clip(clean, 0.0, 1.0)
     return AutomaticResult(clean=clean, direction=selected, alpha=alpha)
+
+
+def _validate_gray(gray: np.ndarray) -> np.ndarray:
+    try:
+        array = np.asarray(gray)
+    except (TypeError, ValueError):
+        raise TypeError("gray must be a numeric array.") from None
+    if not np.issubdtype(array.dtype, np.number) or np.iscomplexobj(array):
+        raise TypeError("gray must be a numeric array.")
+    if array.ndim != 2 or 0 in array.shape:
+        raise ValueError("gray must be a non-empty two-dimensional array.")
+
+    gray_array = np.asarray(array, dtype=np.float64)
+    if not np.isfinite(gray_array).all():
+        raise ValueError("gray must contain only finite values.")
+    return gray_array
 
 
 def _extract_high_pass(tensor: torch.Tensor) -> torch.Tensor:

@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 import torch
 
+import destripe.automatic as automatic_module
 from destripe.automatic import (
     _blocked_repeatability,
     _extract_high_pass,
@@ -16,6 +17,40 @@ from destripe.preprocess import prepare_solver_gray, resize_to_shape
 
 
 _ASSET_DIR = Path(__file__).resolve().parents[1] / "asset"
+
+
+def test_automatic_rejects_nonnumeric_gray() -> None:
+    gray = np.array([["not numeric"]])
+
+    with pytest.raises(TypeError, match=r"^gray must be a numeric array\.$"):
+        automatic_clean(gray, proj=True)
+
+
+@pytest.mark.parametrize(
+    "gray",
+    (
+        np.ones(8),
+        np.ones((2, 2, 2)),
+        np.empty((0, 8)),
+        np.empty((8, 0)),
+    ),
+    ids=("one-dimensional", "three-dimensional", "zero-rows", "zero-columns"),
+)
+def test_automatic_rejects_non_image_shapes(gray: np.ndarray) -> None:
+    with pytest.raises(
+        ValueError,
+        match=r"^gray must be a non-empty two-dimensional array\.$",
+    ):
+        automatic_clean(gray, proj=True)
+
+
+@pytest.mark.parametrize("value", (np.nan, np.inf, -np.inf))
+def test_automatic_rejects_nonfinite_gray(value: float) -> None:
+    gray = np.zeros((8, 8), dtype=np.float64)
+    gray[0, 0] = value
+
+    with pytest.raises(ValueError, match=r"^gray must contain only finite values\.$"):
+        automatic_clean(gray, proj=True)
 
 
 def test_automatic_removes_faint_vertical_stripe_and_preserves_structure() -> None:
@@ -80,6 +115,50 @@ def test_automatic_tie_chooses_lower_mode() -> None:
     assert result.direction == 0
     assert result.alpha == 0.0
     np.testing.assert_array_equal(result.clean, gray)
+
+
+def test_automatic_evaluates_all_five_and_selects_top_reliability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evaluated: list[int] = []
+    blocked_scores = {0: 0.04, 1: 0.16, 2: 0.36, 3: 1.0, 4: 0.64}
+
+    def controlled_blocked_repeatability(
+        tensor: torch.Tensor,
+        mode: int,
+        weights: torch.Tensor,
+    ) -> float:
+        del tensor, weights
+        evaluated.append(mode)
+        return blocked_scores[mode]
+
+    monkeypatch.setattr(
+        automatic_module,
+        "_blocked_repeatability",
+        controlled_blocked_repeatability,
+    )
+    monkeypatch.setattr(
+        automatic_module,
+        "_positive_centered_cosine",
+        lambda _first, _second: 1.0,
+    )
+
+    result = automatic_clean(np.arange(64).reshape(8, 8), proj=False)
+
+    assert evaluated == [0, 1, 2, 3, 4]
+    assert result.direction == 3
+
+
+def test_automatic_projection_clips_unprojected_result() -> None:
+    gray = np.full((8, 8), 1.25, dtype=np.float64)
+
+    unprojected = automatic_clean(gray, proj=False)
+    projected = automatic_clean(gray, proj=True)
+
+    assert np.any((unprojected.clean < 0.0) | (unprojected.clean > 1.0))
+    np.testing.assert_array_equal(projected.clean, np.clip(unprojected.clean, 0.0, 1.0))
+    assert projected.direction == unprojected.direction
+    assert projected.alpha == unprojected.alpha
 
 
 def test_automatic_applies_profile_through_a_protected_crossing() -> None:
