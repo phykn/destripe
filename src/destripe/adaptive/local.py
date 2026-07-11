@@ -36,10 +36,7 @@ def estimate_tile_mus(
 
     tile_mu_grid = tile_mu_pairs.reshape(tiles, tiles, 2)
     smoothed = smooth_tile_mus(tile_mu_grid)
-    return [
-        (float(mu1), float(mu2))
-        for mu1, mu2 in smoothed.reshape(-1, 2)
-    ]
+    return [(float(mu1), float(mu2)) for mu1, mu2 in smoothed.reshape(-1, 2)]
 
 
 def smooth_tile_mus(mus: np.ndarray) -> np.ndarray:
@@ -51,9 +48,7 @@ def smooth_tile_mus(mus: np.ndarray) -> np.ndarray:
     clipped[..., 1] = np.clip(mus[..., 1], MU2_MIN, MU2_MAX)
 
     log_mus = np.log(clipped)
-    smoothed = np.exp(
-        cv2.blur(log_mus, ksize=(3, 3), borderType=cv2.BORDER_REPLICATE)
-    )
+    smoothed = np.exp(cv2.blur(log_mus, ksize=(3, 3), borderType=cv2.BORDER_REPLICATE))
     smoothed[..., 0] = np.clip(smoothed[..., 0], MU1_MIN, MU1_MAX)
     smoothed[..., 1] = np.clip(smoothed[..., 1], MU2_MIN, MU2_MAX)
     return smoothed

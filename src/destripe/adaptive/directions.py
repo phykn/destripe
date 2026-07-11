@@ -6,10 +6,7 @@ from .stripe import measure_shrinkage
 
 
 def score_directions(high_pass: torch.Tensor) -> dict[int, float]:
-    return {
-        mode: _score_direction(high_pass, mode=mode)
-        for mode in ALL_DIRECTIONS
-    }
+    return {mode: _score_direction(high_pass, mode=mode) for mode in ALL_DIRECTIONS}
 
 
 def make_score_weights(scores: dict[int, float]) -> np.ndarray:
@@ -27,9 +24,7 @@ def make_selection_weights(scores: dict[int, float]) -> np.ndarray:
 
 def select_directions(weights: np.ndarray) -> tuple[int, ...]:
     selected_modes = [
-        mode
-        for mode, weight in zip(ALL_DIRECTIONS, weights)
-        if weight > EPS
+        mode for mode, weight in zip(ALL_DIRECTIONS, weights) if weight > EPS
     ]
     if not selected_modes:
         return (int(np.argmax(weights)),)
@@ -37,9 +32,7 @@ def select_directions(weights: np.ndarray) -> tuple[int, ...]:
 
 
 def _make_score_array(scores: dict[int, float]) -> np.ndarray:
-    return np.array(
-        [scores[mode] for mode in ALL_DIRECTIONS], dtype=np.float64
-    )
+    return np.array([scores[mode] for mode in ALL_DIRECTIONS], dtype=np.float64)
 
 
 def _offset_diff(t: torch.Tensor, row_step: int, col_step: int) -> torch.Tensor:

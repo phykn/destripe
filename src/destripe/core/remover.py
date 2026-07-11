@@ -271,7 +271,9 @@ class UniversalStripeRemover:
         try:
             count = len(tile_mus)
         except TypeError as exc:
-            raise ValueError("tile_mus must be a sequence of (mu1, mu2) pairs.") from exc
+            raise ValueError(
+                "tile_mus must be a sequence of (mu1, mu2) pairs."
+            ) from exc
         if count != expected_count:
             raise ValueError("tile_mus length must match the number of tiles.")
 
@@ -476,7 +478,9 @@ class UniversalStripeRemover:
             or not isinstance(iterations, numbers.Integral)
             or iterations <= 0
         ):
-            raise ValueError(f"iterations must be a positive integer, got {iterations}.")
+            raise ValueError(
+                f"iterations must be a positive integer, got {iterations}."
+            )
 
     @staticmethod
     def _validate_tiling_params(tiles: int, overlap: int) -> None:

@@ -29,9 +29,7 @@ def destripe(
         Destriped image with the same shape and dtype.
     """
     input_array = np.asarray(image)
-    if not np.issubdtype(input_array.dtype, np.number) or np.iscomplexobj(
-        input_array
-    ):
+    if not np.issubdtype(input_array.dtype, np.number) or np.iscomplexobj(input_array):
         raise ValueError("image must contain numeric values.")
     if (
         input_array.ndim not in {2, 3}

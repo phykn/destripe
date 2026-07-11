@@ -18,9 +18,7 @@ def refine_clean(
         return refined
 
     for mode in directions:
-        high_pass = extract_high_pass(
-            torch.as_tensor(refined, dtype=torch.float32)
-        )
+        high_pass = extract_high_pass(torch.as_tensor(refined, dtype=torch.float32))
         candidate = project(high_pass, mode)
         alpha = measure_shrinkage(high_pass, mode)
 

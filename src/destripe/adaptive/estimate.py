@@ -27,20 +27,14 @@ def estimate_adaptive_params(
     fixed_directions: tuple[int, ...] | None = None,
 ) -> AdaptiveParams:
     fixed = (
-        None
-        if fixed_directions is None
-        else _validate_fixed_modes(fixed_directions)
+        None if fixed_directions is None else _validate_fixed_modes(fixed_directions)
     )
     analysis = make_analysis_tensor(gray)
     high_pass = extract_high_pass(analysis)
     scores = score_directions(high_pass)
     score_weights = make_score_weights(scores)
     selection_weights = make_selection_weights(scores)
-    selected = (
-        select_directions(selection_weights)
-        if fixed is None
-        else fixed
-    )
+    selected = select_directions(selection_weights) if fixed is None else fixed
     mu1 = 1 / MU1_DENOMINATORS[2]
     mu2, confidence = estimate_strength(
         high_pass=high_pass,
@@ -54,6 +48,8 @@ def estimate_adaptive_params(
         mu2=mu2,
         confidence=confidence,
     )
+
+
 def _validate_fixed_modes(requested: object) -> tuple[int, ...]:
     message = "directions must be a non-empty sequence of unique modes 0..4."
     if not isinstance(requested, (tuple, list)):

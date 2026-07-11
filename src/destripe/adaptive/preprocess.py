@@ -14,11 +14,15 @@ def make_analysis_tensor(gray: np.ndarray) -> torch.Tensor:
         return tensor
     scale = 512 / max_side
     size = (max(8, round(height * scale)), max(8, round(width * scale)))
-    return F.interpolate(
-        tensor.unsqueeze(0).unsqueeze(0),
-        size=size,
-        mode="area",
-    ).squeeze(0).squeeze(0)
+    return (
+        F.interpolate(
+            tensor.unsqueeze(0).unsqueeze(0),
+            size=size,
+            mode="area",
+        )
+        .squeeze(0)
+        .squeeze(0)
+    )
 
 
 def extract_high_pass(tensor: torch.Tensor) -> torch.Tensor:

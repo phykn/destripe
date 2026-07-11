@@ -151,9 +151,10 @@ class TestProcess:
 
     def test_manual_solver_does_not_expose_unused_tolerance(self) -> None:
         assert "tol" not in inspect.signature(UniversalStripeRemover.process).parameters
-        assert "tol" not in inspect.signature(
-            UniversalStripeRemover.process_tiled
-        ).parameters
+        assert (
+            "tol"
+            not in inspect.signature(UniversalStripeRemover.process_tiled).parameters
+        )
 
     def test_batch_3d(self, remover: UniversalStripeRemover) -> None:
         img = torch.rand(3, 32, 32)
@@ -646,9 +647,7 @@ class TestDestripe:
         )
 
         assert result.shape == (7, 9)
-        assert calls == [
-            {"dsize": (9, 7), "interpolation": preprocess.cv2.INTER_CUBIC}
-        ]
+        assert calls == [{"dsize": (9, 7), "interpolation": preprocess.cv2.INTER_CUBIC}]
 
     def test_rgb_uses_one_shared_resized_correction(
         self,
@@ -659,9 +658,7 @@ class TestDestripe:
 
         monkeypatch.setattr(destripe_ops, "automatic_clean", fake_automatic_clean)
 
-        image = np.linspace(0.0, 1.0, 12 * 18 * 3, dtype=np.float64).reshape(
-            12, 18, 3
-        )
+        image = np.linspace(0.0, 1.0, 12 * 18 * 3, dtype=np.float64).reshape(12, 18, 3)
         result = destripe(image, process_size=9, proj=False)
 
         assert result.shape == image.shape

@@ -59,7 +59,10 @@ def test_ops_module_keeps_automatic_flow_direct_and_docstring_concise() -> None:
 
     assert "def _run_grayscale(" not in source
     assert "def _destripe_grayscale(" not in source
-    assert "process_size: Long-edge analysis size; None keeps original resolution." in source
+    assert (
+        "process_size: Long-edge analysis size; None keeps original resolution."
+        in source
+    )
     assert "preserving aspect ratio, then upsample" not in source
     assert "Returns:\n        Destriped image with the same shape and dtype." in source
 

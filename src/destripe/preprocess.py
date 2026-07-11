@@ -10,11 +10,7 @@ _LUMA_B = 0.1140
 
 
 def rgb_to_luma(image: np.ndarray) -> np.ndarray:
-    return (
-        _LUMA_R * image[..., 0]
-        + _LUMA_G * image[..., 1]
-        + _LUMA_B * image[..., 2]
-    )
+    return _LUMA_R * image[..., 0] + _LUMA_G * image[..., 1] + _LUMA_B * image[..., 2]
 
 
 def validate_process_size(process_size: int | None) -> int | None:

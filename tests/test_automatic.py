@@ -55,6 +55,8 @@ def test_automatic_restores_preferred_sample_configuration() -> None:
     assert result.confidence > 0.0
     assert result.clean.shape == processed.shape
     assert np.isfinite(result.clean).all()
+    correction_rms = float(np.sqrt(np.mean((processed - result.clean) ** 2)))
+    assert correction_rms == pytest.approx(0.03544478, abs=1e-6)
 
 
 def test_automatic_is_deterministic() -> None:
