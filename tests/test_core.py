@@ -104,6 +104,11 @@ class TestDirections:
 
 
 class TestConfiguration:
+    def test_pdhg_step_sizes_satisfy_two_dimensional_operator_bound(self) -> None:
+        remover = UniversalStripeRemover(device="cpu")
+
+        assert remover.tau * remover.sigma * 8 < 1
+
     @pytest.mark.parametrize("name", ["mu1", "mu2"])
     @pytest.mark.parametrize("value", [0.0, -0.1, np.nan, np.inf, True, "bad"])
     def test_invalid_regularization_weight(self, name: str, value: object) -> None:
@@ -122,7 +127,7 @@ class TestProcess:
         assert result.min() >= 0.0
         assert result.max() <= 1.0
 
-    def test_private_info_reports_early_stop_without_changing_public_return(
+    def test_solver_always_runs_requested_iterations(
         self,
     ) -> None:
         remover = UniversalStripeRemover(device="cpu", directions=[0])
@@ -131,20 +136,24 @@ class TestProcess:
         info = remover._process_with_info(
             image,
             iterations=100,
-            tol=1e-5,
             proj=True,
         )
         public = remover.process(
             image,
             iterations=100,
-            tol=1e-5,
             proj=True,
         )
 
         assert torch.is_tensor(public)
         assert torch.is_tensor(info.clean)
-        assert 1 <= info.iterations < 100
+        assert info.iterations == 100
         torch.testing.assert_close(public, info.clean)
+
+    def test_manual_solver_does_not_expose_unused_tolerance(self) -> None:
+        assert "tol" not in inspect.signature(UniversalStripeRemover.process).parameters
+        assert "tol" not in inspect.signature(
+            UniversalStripeRemover.process_tiled
+        ).parameters
 
     def test_batch_3d(self, remover: UniversalStripeRemover) -> None:
         img = torch.rand(3, 32, 32)
@@ -176,22 +185,6 @@ class TestProcess:
             remover.process(
                 image=torch.rand(32, 32),
                 iterations=iterations,  # type: ignore[arg-type]
-            )
-
-    def test_invalid_tol(self, remover: UniversalStripeRemover) -> None:
-        with pytest.raises(ValueError, match="tol"):
-            remover.process(image=torch.rand(32, 32), tol=-1e-3)
-
-    @pytest.mark.parametrize("tol", [np.nan, np.inf, True, "bad"])
-    def test_invalid_tol_value(
-        self,
-        remover: UniversalStripeRemover,
-        tol: object,
-    ) -> None:
-        with pytest.raises(ValueError, match="tol"):
-            remover.process(
-                image=torch.rand(32, 32),
-                tol=tol,  # type: ignore[arg-type]
             )
 
     def test_invalid_non_finite(self, remover: UniversalStripeRemover) -> None:

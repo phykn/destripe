@@ -42,7 +42,6 @@ class UniversalStripeRemover:
         self,
         image: torch.Tensor | np.ndarray,
         iterations: int = 500,
-        tol: float = 1e-5,
         proj: bool = True,
         verbose: bool = False,
     ) -> torch.Tensor:
@@ -51,7 +50,6 @@ class UniversalStripeRemover:
         Args:
             image: Input tensor/array with shape ``(H, W)`` or ``(N, H, W)``.
             iterations: Maximum number of PDHG iterations.
-            tol: Relative convergence tolerance.
             proj: Whether to project the clean component onto ``[0, 1]``.
             verbose: Whether to print iteration progress.
 
@@ -61,7 +59,6 @@ class UniversalStripeRemover:
         return self._process_with_info(
             image,
             iterations=iterations,
-            tol=tol,
             proj=proj,
             verbose=verbose,
         ).clean
@@ -71,11 +68,10 @@ class UniversalStripeRemover:
         image: torch.Tensor | np.ndarray,
         *,
         iterations: int,
-        tol: float,
         proj: bool,
         verbose: bool = False,
     ) -> _SolveResult:
-        self._validate_solver_params(iterations=iterations, tol=tol)
+        self._validate_solver_params(iterations=iterations)
 
         input_tensor = self._convert_to_tensor(x=image)
         self._validate_finite_tensor(name="image", x=input_tensor)
@@ -92,7 +88,6 @@ class UniversalStripeRemover:
         result = self._solve(
             data=input_tensor,
             iterations=iterations,
-            tol=tol,
             proj=proj,
             verbose=verbose,
         )
@@ -104,7 +99,6 @@ class UniversalStripeRemover:
         image: torch.Tensor | np.ndarray,
         tiles: int = 1,
         iterations: int = 500,
-        tol: float = 1e-5,
         overlap: int = 64,
         proj: bool = True,
         verbose: bool = False,
@@ -116,7 +110,6 @@ class UniversalStripeRemover:
             image: Input tensor/array with shape ``(H, W)`` or ``(1, H, W)``.
             tiles: Number of tiles per image side.
             iterations: Maximum number of PDHG iterations per tile.
-            tol: Relative convergence tolerance.
             overlap: Overlap width in pixels before cosine blending.
             proj: Whether to project the clean component onto ``[0, 1]``.
             verbose: Whether to print iteration progress.
@@ -125,7 +118,7 @@ class UniversalStripeRemover:
         Returns:
             A tensor with shape ``(H, W)``.
         """
-        self._validate_solver_params(iterations=iterations, tol=tol)
+        self._validate_solver_params(iterations=iterations)
         self._validate_tiling_params(tiles=tiles, overlap=overlap)
 
         input_tensor = self._convert_to_tensor(x=image)
@@ -154,7 +147,6 @@ class UniversalStripeRemover:
                 return self.process(
                     image=image_2d,
                     iterations=iterations,
-                    tol=tol,
                     proj=proj,
                     verbose=verbose,
                 )
@@ -163,7 +155,6 @@ class UniversalStripeRemover:
             return self._solve(
                 data=image_2d.unsqueeze(0),
                 iterations=iterations,
-                tol=tol,
                 proj=proj,
                 verbose=verbose,
                 mu1=tile_mu1,
@@ -179,7 +170,6 @@ class UniversalStripeRemover:
             return self.process(
                 image=image_2d,
                 iterations=iterations,
-                tol=tol,
                 proj=proj,
                 verbose=verbose,
             )
@@ -222,7 +212,6 @@ class UniversalStripeRemover:
             cleaned_tiles = self.process(
                 image=tile_tensor,
                 iterations=iterations,
-                tol=tol,
                 proj=proj,
                 verbose=verbose,
             )
@@ -234,7 +223,6 @@ class UniversalStripeRemover:
             cleaned_tiles = self._solve(
                 data=tile_tensor,
                 iterations=iterations,
-                tol=tol,
                 proj=proj,
                 verbose=verbose,
                 mu1=tile_mu1,
@@ -319,7 +307,6 @@ class UniversalStripeRemover:
         self,
         data: torch.Tensor,
         iterations: int,
-        tol: float,
         proj: bool,
         verbose: bool,
         mu1: torch.Tensor | float | None = None,
@@ -361,7 +348,6 @@ class UniversalStripeRemover:
         sparse_dual = [torch.zeros_like(input=data) for _ in self.directions]
         sparse_dual_bar = [torch.zeros_like(input=data) for _ in self.directions]
 
-        prev_clean = clean.clone()
         scratch = torch.empty_like(input=data)
         directional_diff = torch.empty_like(input=data)
         grad_norm = torch.empty_like(input=data)
@@ -459,16 +445,6 @@ class UniversalStripeRemover:
                         sparse_dual[component_idx], alpha=2
                     )
 
-                if iteration_idx % 20 == 0:
-                    if iteration_idx > 0:
-                        torch.sub(input=clean, other=prev_clean, out=scratch)
-                        rel_change = scratch.norm() / (prev_clean.norm() + eps)
-                        if rel_change < tol:
-                            if verbose:
-                                print(f"\nConverged at iteration {iteration_idx + 1}.")
-                            break
-                    prev_clean.copy_(clean)
-
         if verbose:
             print("")
 
@@ -494,20 +470,13 @@ class UniversalStripeRemover:
         raise ValueError("mu tensor must be scalar or match the batch size.")
 
     @staticmethod
-    def _validate_solver_params(iterations: int, tol: float) -> None:
+    def _validate_solver_params(iterations: int) -> None:
         if (
             isinstance(iterations, bool)
             or not isinstance(iterations, numbers.Integral)
             or iterations <= 0
         ):
             raise ValueError(f"iterations must be a positive integer, got {iterations}.")
-        if (
-            isinstance(tol, bool)
-            or not isinstance(tol, numbers.Real)
-            or not math.isfinite(float(tol))
-            or tol < 0
-        ):
-            raise ValueError(f"tol must be a finite non-negative number, got {tol}.")
 
     @staticmethod
     def _validate_tiling_params(tiles: int, overlap: int) -> None:

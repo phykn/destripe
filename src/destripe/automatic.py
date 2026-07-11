@@ -11,7 +11,6 @@ from .core import UniversalStripeRemover
 AUTOMATIC_ITERATIONS = 1000
 AUTOMATIC_TILES = 2
 AUTOMATIC_OVERLAP = 64
-AUTOMATIC_TOLERANCE = 1e-5
 
 
 @dataclass(frozen=True)
@@ -52,7 +51,6 @@ def automatic_clean(gray: np.ndarray, *, proj: bool) -> AutomaticResult:
         np.asarray(values, dtype=np.float32),
         tiles=AUTOMATIC_TILES,
         iterations=AUTOMATIC_ITERATIONS,
-        tol=AUTOMATIC_TOLERANCE,
         overlap=AUTOMATIC_OVERLAP,
         proj=proj,
         tile_mus=tile_mus,
