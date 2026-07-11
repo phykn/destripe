@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from benchmarks.performance import main as performance_main
+from benchmarks.hybrid_quality import QualityRow, quality_failures
 from benchmarks.synthetic import (
     PatternSpec,
     RESULT_FIELDS,
@@ -109,6 +110,19 @@ def test_load_samples_reserves_sample_one_for_real_stripe(tmp_path: Path) -> Non
         True,
         True,
     ]
+
+
+def test_load_samples_converts_rgb_sem_sources_to_luma(tmp_path: Path) -> None:
+    rgb = np.zeros((12, 16, 3), dtype=np.uint8)
+    rgb[..., 2] = 255
+    cv2.imwrite(str(tmp_path / "sample_02.tif"), rgb)
+
+    samples = load_samples(tmp_path)
+
+    assert len(samples) == 1
+    assert samples[0].image.shape == (12, 16)
+    assert samples[0].image.dtype == np.float64
+    assert 0.0 < float(samples[0].image.mean()) < 1.0
 
 
 def test_inject_stripe_reports_clipped_actual_delta() -> None:
@@ -216,6 +230,25 @@ def test_structural_similarity_is_one_for_identical_images() -> None:
     image = np.random.default_rng(5).random((32, 32))
 
     assert structural_similarity(image, image) == pytest.approx(1.0)
+
+
+def test_hybrid_quality_rejects_unsupported_region_damage() -> None:
+    row = QualityRow(
+        sample="sample_02.tif",
+        case="interrupted:center",
+        mode=0,
+        strength=0.03,
+        input_psnr=40.0,
+        output_psnr=41.0,
+        input_ssim=0.99,
+        output_ssim=0.995,
+        unsupported_input_mse=0.0,
+        unsupported_output_mse=1e-6,
+    )
+
+    failures = quality_failures([row])
+
+    assert any("unsupported MSE" in failure for failure in failures)
 
 
 def test_default_patterns_cover_all_directions_and_two_vertical_guards() -> None:

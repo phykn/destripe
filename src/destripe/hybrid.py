@@ -3,6 +3,7 @@ import math
 import time
 
 import numpy as np
+import torch
 
 from .core import UniversalStripeRemover
 
@@ -190,28 +191,43 @@ def _run_hybrid(
     )
     evaluated: list[_CandidateEvaluation] = []
     solver_started = time.perf_counter()
-    for parameter in parameters:
-        remover = UniversalStripeRemover(
-            mu1=parameter.mu1,
-            mu2=parameter.mu2,
-            directions=[direction],
+    remover = UniversalStripeRemover(
+        mu1=parameters[0].mu1,
+        mu2=parameters[0].mu2,
+        directions=[direction],
+    )
+    data = torch.as_tensor(gray_array, dtype=torch.float32).unsqueeze(0)
+    data = data.expand(len(parameters), -1, -1).clone()
+    mu1 = torch.tensor([item.mu1 for item in parameters], dtype=torch.float32)
+    mu2 = torch.tensor([item.mu2 for item in parameters], dtype=torch.float32)
+    try:
+        solve_result = remover._solve(
+            data=data,
+            iterations=_MAX_ITERATIONS,
+            tol=_CONVERGENCE_TOLERANCE,
+            proj=proj,
+            verbose=False,
+            mu1=mu1,
+            mu2=mu2,
         )
-        try:
-            solve_result = remover._process_with_info(
-                gray_array,
-                iterations=_MAX_ITERATIONS,
-                tol=_CONVERGENCE_TOLERANCE,
-                proj=proj,
-            )
-        except (RuntimeError, FloatingPointError):
-            continue
-        clean = solve_result.clean.detach().cpu().numpy().astype(np.float64, copy=False)
+    except (RuntimeError, FloatingPointError):
+        solve_result = None
+    if solve_result is not None:
+        cleaned = solve_result.clean.numpy().astype(np.float64, copy=False)
+        executed_iterations = solve_result.iterations
+    else:
+        cleaned = np.empty((0, *gray_array.shape), dtype=np.float64)
+        executed_iterations = 0
+
+    for index, parameter in enumerate(parameters):
+        if index >= len(cleaned):
+            break
         candidate = _evaluate_candidate(
-            correction=gray_array - clean,
+            correction=gray_array - cleaned[index],
             target=target_array,
             protection=protection_array,
             candidate=parameter,
-            iterations=solve_result.iterations,
+            iterations=executed_iterations,
             confidence=reliability,
         )
         if candidate is not None:

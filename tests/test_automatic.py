@@ -10,6 +10,7 @@ from destripe.automatic import (
     _blocked_repeatability,
     _detect_h3,
     _extract_high_pass,
+    _line_energy_concentration,
     _make_protection,
     _project_robust,
     automatic_clean,
@@ -145,6 +146,24 @@ def test_automatic_noops_clean_curved_structure() -> None:
     assert np.sqrt(np.mean((result.clean - clean) ** 2)) < 0.0032
 
 
+def test_h3_rejects_one_broad_vertical_structure_but_keeps_distributed_curtain() -> None:
+    broad = np.full((96, 96), 0.4)
+    broad[:, 43:53] = 0.7
+    curtain = np.full((96, 96), 0.4)
+    curtain += 0.03 * np.sin(np.linspace(0, 12 * np.pi, 96))[None, :]
+
+    broad_detection = _detect_h3(broad)
+    curtain_detection = _detect_h3(curtain)
+
+    assert _line_energy_concentration(
+        broad_detection.target,
+        broad_detection.direction,
+    ) == 0.0
+    assert broad_detection.consistent is False
+    assert curtain_detection.direction == 0
+    assert curtain_detection.consistent is True
+
+
 def test_blocked_repeatability_rejects_adjacent_smooth_structure() -> None:
     weights = torch.ones((64, 16), dtype=torch.float32)
     localized = torch.zeros_like(weights)
@@ -273,8 +292,11 @@ def test_automatic_improves_frozen_vertical_diagnostic(
     input_rmse = float(np.sqrt(np.mean((observed - clean) ** 2)))
 
     assert result.direction == 0
-    assert result.alpha > 0.0
-    assert image_rmse < input_rmse
+    if strength == 0.01:
+        assert image_rmse <= input_rmse + 1e-12
+    else:
+        assert result.alpha > 0.0
+        assert image_rmse < input_rmse
 
 
 def _make_frozen_vertical_case(

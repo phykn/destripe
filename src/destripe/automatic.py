@@ -21,10 +21,12 @@ PARALLEL_OFFSETS = {
 
 _EPS = 1e-9
 _NORMAL_MAD_SCALE = 0.6744897501960817
-_MIN_RELIABILITY = 0.1
+_MIN_RELIABILITY = 0.25
 _MIRRORED_DIRECTIONS = {1: 3, 2: 4, 3: 1, 4: 2}
 _MIN_MIRROR_DOMINANCE = 1.25
 _MIN_TARGET_STRENGTH = MU2_CANDIDATES[0] / 2
+_MAX_LOCAL_LINE_ENERGY = 0.4
+_MAX_QUARTER_GAIN_RATIO = 1.75
 
 
 @dataclass(frozen=True)
@@ -142,6 +144,7 @@ def _detect_h3(gray_array: np.ndarray) -> H3Detection:
     target = alpha * profile_array
     target_power = float(np.sum(target * target))
     target_strength = _robust_target_strength(target)
+    local_line_energy = _line_energy_concentration(target, selected)
     mirrored = _MIRRORED_DIRECTIONS.get(selected)
     mirror_dominance = (
         math.inf
@@ -153,6 +156,7 @@ def _detect_h3(gray_array: np.ndarray) -> H3Detection:
         and mirror_dominance >= _MIN_MIRROR_DOMINANCE
         and alpha > 0.0
         and target_strength >= _MIN_TARGET_STRENGTH
+        and local_line_energy <= _MAX_LOCAL_LINE_ENERGY
         and math.isfinite(target_power)
         and target_power > _EPS
     )
@@ -167,6 +171,28 @@ def _detect_h3(gray_array: np.ndarray) -> H3Detection:
         alpha=alpha,
         consistent=consistent,
     )
+
+
+def _line_energy_concentration(target: np.ndarray, mode: int) -> float:
+    target_array = np.asarray(target, dtype=np.float64)
+    line_ids = _make_line_ids(
+        target_array.shape,
+        mode,
+        torch.device("cpu"),
+    ).numpy()
+    unique, inverse = np.unique(line_ids.reshape(-1), return_inverse=True)
+    sums = np.zeros(unique.size, dtype=np.float64)
+    counts = np.zeros(unique.size, dtype=np.float64)
+    np.add.at(sums, inverse, target_array.reshape(-1))
+    np.add.at(counts, inverse, 1.0)
+    profile = np.divide(sums, counts, out=np.zeros_like(sums), where=counts > 0)
+    energy = profile * profile
+    total = float(np.sum(energy))
+    if total <= _EPS:
+        return 0.0
+    window = max(3, int(math.ceil(0.1 * len(energy))))
+    local = np.convolve(energy, np.ones(window, dtype=np.float64), mode="valid")
+    return float(np.max(local) / total)
 
 
 def _validate_gray(gray: np.ndarray) -> np.ndarray:
@@ -378,13 +404,24 @@ def _blocked_repeatability(
         masks.append(counts > 0)
 
     pairwise: list[tuple[float, int, int]] = []
+    centered_profiles = [profile - float(profile.mean()) for profile in profiles]
+    consensus = sum(centered_profiles) / len(centered_profiles)
+    consensus_power = float(np.dot(consensus, consensus))
+    if consensus_power <= _EPS:
+        return 0.0
+    gains = [
+        float(np.dot(profile, consensus) / consensus_power)
+        for profile in centered_profiles
+    ]
+    if min(gains) <= 0.0 or max(gains) / min(gains) > _MAX_QUARTER_GAIN_RATIO:
+        return 0.0
     for first_idx in range(4):
         for second_idx in range(first_idx + 1, 4):
             usable = masks[first_idx] & masks[second_idx]
             if int(np.count_nonzero(usable)) < 2:
                 return 0.0
-            first = profiles[first_idx][usable]
-            second = profiles[second_idx][usable]
+            first = profiles[first_idx][usable].copy()
+            second = profiles[second_idx][usable].copy()
             first -= float(first.mean())
             second -= float(second.mean())
             denominator = float(np.linalg.norm(first) * np.linalg.norm(second))

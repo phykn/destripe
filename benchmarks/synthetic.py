@@ -233,8 +233,12 @@ def load_samples(asset_dir: str | Path) -> list[BenchmarkImage]:
     samples = []
     for path in paths:
         image = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
-        if image is None or image.ndim != 2:
-            raise ValueError(f"sample must be a grayscale image: {path}.")
+        if image is None or image.ndim not in {2, 3}:
+            raise ValueError(f"sample must be a grayscale or RGB image: {path}.")
+        if image.ndim == 3:
+            if image.shape[2] != 3:
+                raise ValueError(f"sample must be a grayscale or RGB image: {path}.")
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         if np.issubdtype(image.dtype, np.integer):
             scale = float(np.iinfo(image.dtype).max)
             normalized = image.astype(np.float64) / scale
