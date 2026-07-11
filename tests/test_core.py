@@ -146,6 +146,49 @@ class TestProcess:
         assert 1 <= info.iterations < 100
         torch.testing.assert_close(public, info.clean)
 
+    def test_private_info_returns_direction_components_that_reconstruct_input(
+        self,
+    ) -> None:
+        remover = UniversalStripeRemover(device="cpu", directions=[0, 4])
+        image = torch.rand(24, 28)
+
+        info = remover._process_with_info(
+            image,
+            iterations=40,
+            tol=1e-5,
+            proj=True,
+        )
+
+        assert len(info.components) == 2
+        torch.testing.assert_close(
+            info.clean + sum(info.components),
+            image,
+            atol=2e-5,
+            rtol=2e-5,
+        )
+
+    def test_private_tiled_info_blends_components_with_clean(self) -> None:
+        remover = UniversalStripeRemover(device="cpu", directions=[0, 4])
+        image = torch.rand(25, 29)
+
+        info = remover._process_tiled_with_info(
+            image,
+            tiles=2,
+            iterations=20,
+            tol=1e-5,
+            overlap=4,
+            proj=True,
+        )
+
+        assert info.clean.shape == image.shape
+        assert all(component.shape == image.shape for component in info.components)
+        torch.testing.assert_close(
+            info.clean + sum(info.components),
+            image,
+            atol=2e-5,
+            rtol=2e-5,
+        )
+
     def test_batch_3d(self, remover: UniversalStripeRemover) -> None:
         img = torch.rand(3, 32, 32)
         result = remover.process(image=img, iterations=10)
