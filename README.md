@@ -47,10 +47,9 @@ diagonal directions. Passing `directions=None` uses all five modes.
 
 ## Validation Scope
 
-The automatic path is validated primarily for battery-SEM curtaining. The
-bundled real striped image is the visual baseline; clean SEM sources are used
-with synthetic curtains for repeatable checks. Because no paired ground truth
-exists for the real striped image, visual inspection remains part of validation.
+The bundled `asset/sample.jpeg` is the visual reference for the automatic path.
+Because no paired ground truth exists for this real striped image, the executed
+notebook and visual inspection remain the quality check.
 
 ## Reference
 

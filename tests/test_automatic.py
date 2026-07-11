@@ -40,8 +40,8 @@ def test_automatic_noops_constant_and_tiny_images() -> None:
         assert result.directions == ()
 
 
-def test_automatic_restores_preferred_adaptive_sample_one_configuration() -> None:
-    encoded = cv2.imread(str(ASSET_DIR / "sample_01.jpeg"), cv2.IMREAD_GRAYSCALE)
+def test_automatic_restores_preferred_sample_configuration() -> None:
+    encoded = cv2.imread(str(ASSET_DIR / "sample.jpeg"), cv2.IMREAD_GRAYSCALE)
     assert encoded is not None
     values = encoded.astype(np.float64)
     normalized = (values - values.min()) / (values.max() - values.min())
