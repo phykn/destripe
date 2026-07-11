@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "destripe"
 version = "0.1.3"
-description = "Automatic robust directional profiles with an optional manual PDHG core"
+description = "Automatic H3-guided PDHG hybrid stripe removal"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.9"

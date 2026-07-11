@@ -1,7 +1,7 @@
 # destripe
 
-Automatic robust directional profiles remove stripe noise from NumPy images.
-For advanced control, an optional manual PDHG core is available through PyTorch.
+An automatic H3-guided PDHG hybrid removes stripe noise from NumPy images.
+For advanced control, the manual PDHG core is available through PyTorch.
 
 ## Automatic Usage
 
@@ -19,11 +19,18 @@ resolution, or use a positive long-edge size to estimate broad curtain fields
 at lower resolution and resize the correction back. Set `proj=False` only when
 unclipped floating output is required.
 
-The automatic H3 path evaluates five stripe directions, estimates robust line
-profiles from direction-consistent pixels, checks distant-block and multi-scale
-repeatability, and subtracts the strongest supported profile with an analytic
-coefficient. It does not require ground truth, a strength level, or a per-image
-threshold.
+The parameter-free automatic path uses H3 only to detect one supported stripe
+direction and to apply safety gates. Four along-line regions must agree, the
+signal must not be concentrated in one broad structural band, and ambiguous
+mirrored directions are rejected. If those checks fail, the image is returned
+unchanged.
+
+When detection is supported, a compact image-derived `mu1`/`mu2` search runs the
+existing PDHG solver in the selected direction. The candidate that best explains
+the H3 target with the least protected-structure leakage is scaled
+conservatively and applied. This keeps correction spatially local instead of
+subtracting one profile along an entire line. Weak supported curtains can be
+removed, while ambiguous weak signals safely remain unchanged.
 
 ## Manual PDHG Core
 
@@ -48,9 +55,12 @@ diagonal directions. Passing `directions=None` uses all five modes.
 ## Validation Scope
 
 The automatic path is validated primarily for vertical battery-SEM curtaining.
-Medium and strong oblique stripes perform well, but weak oblique direction
-coverage remains incomplete. That limitation needs a separate future design
-rather than hidden image-specific heuristics.
+On the bundled SEM sources it preserves clean images exactly, improves medium
+and strong continuous synthetic curtains, and returns interrupted curtains
+unchanged so clean gaps do not acquire full-line noise. Highly textured 1%
+synthetic curtains may safely no-op when the evidence is ambiguous. Weak oblique
+direction coverage remains incomplete; it is not handled with image-specific
+branches.
 
 ## Reference
 

@@ -544,7 +544,8 @@ def test_readme_documents_simple_automatic_and_manual_paths() -> None:
     assert "clean = destripe(image, process_size=256)" in readme
     assert "UniversalStripeRemover" in readme
     assert "weak oblique" in readme.lower()
-    assert "automatic robust directional profiles" in readme.lower()
+    assert "h3-guided pdhg" in readme.lower()
+    assert "interrupted curtains" in readme.lower()
     for stale in ("adaptive=", "Adaptive Mode", "tile-mu", "tiles="):
         assert stale not in readme
 
@@ -554,7 +555,7 @@ def test_project_metadata_and_ruff_notebook_scope_match_automatic_api() -> None:
         encoding="utf-8"
     )
 
-    assert "automatic robust directional profiles" in pyproject.lower()
+    assert "automatic h3-guided pdhg hybrid" in pyproject.lower()
     assert '[tool.ruff.lint.per-file-ignores]' in pyproject
     assert '"notebooks/*.ipynb" = ["E402"]' in pyproject
 
