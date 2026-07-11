@@ -10,7 +10,7 @@ import numpy as np
 
 from benchmarks.acceptance import ROBUSTNESS_PATTERNS, evaluate_acceptance
 from destripe import destripe
-from destripe.automatic import PARALLEL_OFFSETS
+from destripe.adaptive.constants import PARALLEL_OFFSETS
 
 
 RESULT_FIELDS = (

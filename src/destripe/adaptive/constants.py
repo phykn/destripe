@@ -1,5 +1,4 @@
 ALL_DIRECTIONS = (0, 1, 2, 3, 4)
-ADAPTIVE_LEVELS = (0, 1, 2, 3)
 PARALLEL_OFFSETS = {
     0: (1, 0),
     1: (2, 1),

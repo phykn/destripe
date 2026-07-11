@@ -1,6 +1,6 @@
 # destripe
 
-An automatic H3-guided PDHG hybrid removes stripe noise from NumPy images.
+An automatic adaptive PDHG pipeline removes stripe noise from NumPy images.
 For advanced control, the manual PDHG core is available through PyTorch.
 
 ## Automatic Usage
@@ -19,18 +19,11 @@ resolution, or use a positive long-edge size to estimate broad curtain fields
 at lower resolution and resize the correction back. Set `proj=False` only when
 unclipped floating output is required.
 
-The parameter-free automatic path uses H3 only to detect one supported stripe
-direction and to apply safety gates. Four along-line regions must agree, the
-signal must not be concentrated in one broad structural band, and ambiguous
-mirrored directions are rejected. If those checks fail, the image is returned
-unchanged.
-
-When detection is supported, a compact image-derived `mu1`/`mu2` search runs the
-existing PDHG solver in the selected direction. The candidate that best explains
-the H3 target with the least protected-structure leakage is scaled
-conservatively and applied. This keeps correction spatially local instead of
-subtracting one profile along an entire line. Weak supported curtains can be
-removed, while ambiguous weak signals safely remain unchanged.
+The automatic path estimates supported stripe directions and `mu2` from the
+image, then runs the multi-direction PDHG solver with local 2-by-2 tile weights.
+It finishes with a small residual refinement. The public API intentionally has
+no adaptive tuning level; the quality-oriented solver configuration is kept
+internal and deterministic.
 
 ## Manual PDHG Core
 
@@ -54,13 +47,10 @@ diagonal directions. Passing `directions=None` uses all five modes.
 
 ## Validation Scope
 
-The automatic path is validated primarily for vertical battery-SEM curtaining.
-On the bundled SEM sources it preserves clean images exactly, improves medium
-and strong continuous synthetic curtains, and returns interrupted curtains
-unchanged so clean gaps do not acquire full-line noise. Highly textured 1%
-synthetic curtains may safely no-op when the evidence is ambiguous. Weak oblique
-direction coverage remains incomplete; it is not handled with image-specific
-branches.
+The automatic path is validated primarily for battery-SEM curtaining. The
+bundled real striped image is the visual baseline; clean SEM sources are used
+with synthetic curtains for repeatable checks. Because no paired ground truth
+exists for the real striped image, visual inspection remains part of validation.
 
 ## Reference
 

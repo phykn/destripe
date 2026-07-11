@@ -1,198 +1,76 @@
 from dataclasses import dataclass
-import math
 import time
 
-import cv2
 import numpy as np
-import torch
-import torch.nn.functional as F
 
-from .hybrid import MU2_CANDIDATES, _robust_target_strength, _run_hybrid
+from .adaptive import estimate_adaptive_params, estimate_tile_mus
+from .adaptive.refine import refine_clean
+from .core import UniversalStripeRemover
 
 
-ALL_DIRECTIONS = (0, 1, 2, 3, 4)
-PARALLEL_OFFSETS = {
-    0: (1, 0),
-    1: (2, 1),
-    2: (1, 1),
-    3: (2, -1),
-    4: (1, -1),
-}
-
-_EPS = 1e-9
-_NORMAL_MAD_SCALE = 0.6744897501960817
-_MIN_RELIABILITY = 0.25
-_MIRRORED_DIRECTIONS = {1: 3, 2: 4, 3: 1, 4: 2}
-_MIN_MIRROR_DOMINANCE = 1.25
-_MIN_TARGET_STRENGTH = MU2_CANDIDATES[0] / 2
-_MAX_LOCAL_LINE_ENERGY = 0.4
-_MAX_QUARTER_GAIN_RATIO = 1.75
+AUTOMATIC_ITERATIONS = 1000
+AUTOMATIC_TILES = 2
+AUTOMATIC_OVERLAP = 64
+AUTOMATIC_TOLERANCE = 1e-5
 
 
 @dataclass(frozen=True)
 class AutomaticResult:
     clean: np.ndarray
-    direction: int
-    alpha: float
-    reliability: float
-    mu1: float | None
-    mu2: float | None
-    beta: float
-    iterations: int
-    candidate_count: int
-    detection_seconds: float
-    solver_seconds: float
-
-
-@dataclass(frozen=True)
-class H3Detection:
-    direction: int
-    target: np.ndarray
-    protection: np.ndarray
-    reliability: float
-    alpha: float
-    consistent: bool
+    directions: tuple[int, ...]
+    mu1: float
+    mu2: float
+    confidence: float
+    elapsed_seconds: float
 
 
 def automatic_clean(gray: np.ndarray, *, proj: bool) -> AutomaticResult:
-    gray_array = _validate_gray(gray)
-    detection_started = time.perf_counter()
-    detection = _detect_h3(gray_array)
-    detection_seconds = time.perf_counter() - detection_started
-    hybrid = _run_hybrid(
-        gray_array,
-        direction=detection.direction,
-        target=detection.target,
-        protection=detection.protection,
-        reliability=detection.reliability,
-        consistent=detection.consistent,
+    values = _validate_gray(gray)
+    if min(values.shape) < 2 or float(np.ptp(values)) < 1e-12:
+        return AutomaticResult(
+            clean=np.clip(values, 0.0, 1.0) if proj else values.copy(),
+            directions=(),
+            mu1=0.25,
+            mu2=0.01,
+            confidence=0.0,
+            elapsed_seconds=0.0,
+        )
+
+    started = time.perf_counter()
+    params = estimate_adaptive_params(values)
+    tile_mus = estimate_tile_mus(
+        values,
+        tiles=AUTOMATIC_TILES,
+        directions=params.directions,
+    )
+    remover = UniversalStripeRemover(
+        mu1=params.mu1,
+        mu2=params.mu2,
+        directions=params.directions,
+    )
+    solver_clean = remover.process_tiled(
+        np.asarray(values, dtype=np.float32),
+        tiles=AUTOMATIC_TILES,
+        iterations=AUTOMATIC_ITERATIONS,
+        tol=AUTOMATIC_TOLERANCE,
+        overlap=AUTOMATIC_OVERLAP,
+        proj=proj,
+        tile_mus=tile_mus,
+    ).numpy()
+    clean = refine_clean(
+        gray=values,
+        clean=solver_clean,
+        directions=params.directions,
         proj=proj,
     )
-    diagnostics = hybrid.diagnostics
-    clean = np.clip(hybrid.clean, 0.0, 1.0) if proj else hybrid.clean
     return AutomaticResult(
         clean=clean,
-        direction=detection.direction,
-        alpha=detection.alpha,
-        reliability=detection.reliability,
-        mu1=diagnostics.mu1,
-        mu2=diagnostics.mu2,
-        beta=diagnostics.beta,
-        iterations=diagnostics.iterations,
-        candidate_count=diagnostics.candidate_count,
-        detection_seconds=detection_seconds,
-        solver_seconds=diagnostics.solver_seconds,
+        directions=params.directions,
+        mu1=params.mu1,
+        mu2=params.mu2,
+        confidence=params.confidence,
+        elapsed_seconds=time.perf_counter() - started,
     )
-
-
-def _detect_h3(gray_array: np.ndarray) -> H3Detection:
-    tensor = torch.as_tensor(gray_array, dtype=torch.float32)
-    high_pass = _extract_high_pass(tensor)
-    blurred = cv2.GaussianBlur(
-        np.asarray(gray_array, dtype=np.float32),
-        (0, 0),
-        sigmaX=1.0,
-    )
-    blurred_high_pass = _extract_high_pass(torch.as_tensor(blurred))
-
-    profiles: dict[int, torch.Tensor] = {}
-    protections: dict[int, torch.Tensor] = {}
-    reliabilities: dict[int, float] = {}
-    for mode in ALL_DIRECTIONS:
-        protection = _make_protection(high_pass, mode)
-        weights = 1.0 - protection
-        profile = _project_robust(high_pass, mode, weights)
-        blurred_profile = _project_robust(blurred_high_pass, mode, weights)
-        scale_repeatability = _positive_centered_cosine(profile, blurred_profile)
-        blocked_repeatability = _blocked_repeatability(
-            high_pass,
-            mode=mode,
-            weights=weights,
-        )
-        reliability = math.sqrt(blocked_repeatability * scale_repeatability)
-        profiles[mode] = torch.nan_to_num(profile)
-        protections[mode] = protection
-        reliabilities[mode] = float(np.clip(np.nan_to_num(reliability), 0.0, 1.0))
-
-    selected = max(
-        ALL_DIRECTIONS,
-        key=lambda mode: (reliabilities[mode], -mode),
-    )
-    selected_profile = profiles[selected]
-    selected_protection = protections[selected]
-    selected_weights = 1.0 - selected_protection
-    proposal_profile = _project_robust(
-        _extract_high_pass(selected_profile),
-        selected,
-        selected_weights,
-    )
-    curvature = _second_parallel_diff(selected_profile, selected)
-    profile_power = float(torch.sum(proposal_profile.square()).item())
-    protected_curvature = float(
-        torch.sum((selected_protection * curvature).square()).item()
-    )
-    leakage = protected_curvature / (profile_power + _EPS)
-    alpha = _choose_alpha(
-        input_profile=selected_profile,
-        proposal_profile=proposal_profile,
-        reliability=reliabilities[selected],
-        leakage=leakage,
-    )
-
-    profile_array = selected_profile.numpy().astype(np.float64, copy=False)
-    protection_array = selected_protection.numpy().astype(np.float64, copy=False)
-    target = alpha * profile_array
-    target_power = float(np.sum(target * target))
-    target_strength = _robust_target_strength(target)
-    local_line_energy = _line_energy_concentration(target, selected)
-    mirrored = _MIRRORED_DIRECTIONS.get(selected)
-    mirror_dominance = (
-        math.inf
-        if mirrored is None
-        else reliabilities[selected] / (reliabilities[mirrored] + _EPS)
-    )
-    consistent = bool(
-        reliabilities[selected] >= _MIN_RELIABILITY
-        and mirror_dominance >= _MIN_MIRROR_DOMINANCE
-        and alpha > 0.0
-        and target_strength >= _MIN_TARGET_STRENGTH
-        and local_line_energy <= _MAX_LOCAL_LINE_ENERGY
-        and math.isfinite(target_power)
-        and target_power > _EPS
-    )
-    if not consistent:
-        target = np.zeros_like(gray_array)
-        alpha = 0.0
-    return H3Detection(
-        direction=selected,
-        target=target,
-        protection=protection_array,
-        reliability=reliabilities[selected],
-        alpha=alpha,
-        consistent=consistent,
-    )
-
-
-def _line_energy_concentration(target: np.ndarray, mode: int) -> float:
-    target_array = np.asarray(target, dtype=np.float64)
-    line_ids = _make_line_ids(
-        target_array.shape,
-        mode,
-        torch.device("cpu"),
-    ).numpy()
-    unique, inverse = np.unique(line_ids.reshape(-1), return_inverse=True)
-    sums = np.zeros(unique.size, dtype=np.float64)
-    counts = np.zeros(unique.size, dtype=np.float64)
-    np.add.at(sums, inverse, target_array.reshape(-1))
-    np.add.at(counts, inverse, 1.0)
-    profile = np.divide(sums, counts, out=np.zeros_like(sums), where=counts > 0)
-    energy = profile * profile
-    total = float(np.sum(energy))
-    if total <= _EPS:
-        return 0.0
-    window = max(3, int(math.ceil(0.1 * len(energy))))
-    local = np.convolve(energy, np.ones(window, dtype=np.float64), mode="valid")
-    return float(np.max(local) / total)
 
 
 def _validate_gray(gray: np.ndarray) -> np.ndarray:
@@ -204,286 +82,7 @@ def _validate_gray(gray: np.ndarray) -> np.ndarray:
         raise TypeError("gray must be a numeric array.")
     if array.ndim != 2 or 0 in array.shape:
         raise ValueError("gray must be a non-empty two-dimensional array.")
-
-    gray_array = np.asarray(array, dtype=np.float64)
-    if not np.isfinite(gray_array).all():
+    values = np.asarray(array, dtype=np.float64)
+    if not np.isfinite(values).all():
         raise ValueError("gray must contain only finite values.")
-    return gray_array
-
-
-def _extract_high_pass(tensor: torch.Tensor) -> torch.Tensor:
-    height, width = tensor.shape
-    if min(height, width) < 4:
-        return tensor - tensor.mean()
-    kernel = int(round(min(height, width) * 0.015))
-    kernel = max(7, min(31, kernel | 1))
-    pad = kernel // 2
-    padded = F.pad(
-        tensor.unsqueeze(0).unsqueeze(0),
-        pad=(pad, pad, pad, pad),
-        mode="reflect",
-    )
-    blur = F.avg_pool2d(padded, kernel_size=kernel, stride=1)
-    return tensor - blur.squeeze(0).squeeze(0)
-
-
-def _make_protection(high_pass: torch.Tensor, mode: int) -> torch.Tensor:
-    activity = _parallel_diff(high_pass, mode).abs()
-    median = torch.median(activity)
-    mad = torch.median((activity - median).abs()) / _NORMAL_MAD_SCALE
-    scale = mad
-    if not math.isfinite(float(scale.item())) or float(scale.item()) <= _EPS:
-        scale = activity.std(unbiased=False)
-    normalized = ((activity - median) / (3.0 * scale + _EPS)).clamp(0.0, 1.0)
-
-    array = normalized.numpy()
-    array = cv2.dilate(array, np.ones((3, 3), dtype=np.uint8))
-    array = cv2.GaussianBlur(array, (5, 5), sigmaX=0)
-    return torch.from_numpy(np.nan_to_num(array)).clamp(0.0, 1.0)
-
-
-def _parallel_diff(tensor: torch.Tensor, mode: int) -> torch.Tensor:
-    row_step, col_step = PARALLEL_OFFSETS[mode]
-    source_rows, target_rows = _valid_slices(tensor.shape[0], row_step)
-    source_cols, target_cols = _valid_slices(tensor.shape[1], col_step)
-    difference = torch.zeros_like(tensor)
-    difference[target_rows, target_cols] = (
-        tensor[target_rows, target_cols] - tensor[source_rows, source_cols]
-    )
-    return difference
-
-
-def _second_parallel_diff(tensor: torch.Tensor, mode: int) -> torch.Tensor:
-    row_step, col_step = PARALLEL_OFFSETS[mode]
-    source_rows, middle_rows, target_rows = _second_valid_slices(
-        tensor.shape[0], row_step
-    )
-    source_cols, middle_cols, target_cols = _second_valid_slices(
-        tensor.shape[1], col_step
-    )
-    difference = torch.zeros_like(tensor)
-    difference[target_rows, target_cols] = (
-        tensor[target_rows, target_cols]
-        - 2.0 * tensor[middle_rows, middle_cols]
-        + tensor[source_rows, source_cols]
-    )
-    return difference
-
-
-def _valid_slices(size: int, step: int) -> tuple[slice, slice]:
-    if step >= 0:
-        span = max(0, size - step)
-        start = min(step, size)
-        return slice(0, span), slice(start, start + span)
-    span = max(0, size + step)
-    start = min(-step, size)
-    return slice(start, start + span), slice(0, span)
-
-
-def _second_valid_slices(size: int, step: int) -> tuple[slice, slice, slice]:
-    span = max(0, size - 2 * abs(step))
-    if step >= 0:
-        middle = min(step, size)
-        target = min(2 * step, size)
-        return (
-            slice(0, span),
-            slice(middle, middle + span),
-            slice(target, target + span),
-        )
-    source = min(-2 * step, size)
-    middle = min(-step, size)
-    return (
-        slice(source, source + span),
-        slice(middle, middle + span),
-        slice(0, span),
-    )
-
-
-def _project_robust(
-    tensor: torch.Tensor,
-    mode: int,
-    weights: torch.Tensor,
-) -> torch.Tensor:
-    safe = weights.to(dtype=tensor.dtype, device=tensor.device).clamp(0.0, 1.0)
-    first = _project_weighted(tensor=tensor, mode=mode, weights=safe)
-    residual = (tensor - first).abs()
-    scale = _project_weighted(tensor=residual, mode=mode, weights=safe)
-    cutoff = 1.345 * scale
-    huber = torch.where(
-        residual <= _EPS,
-        torch.ones_like(residual),
-        torch.minimum(
-            torch.ones_like(residual),
-            cutoff / residual.clamp(min=_EPS),
-        ),
-    )
-    return _project_weighted(tensor=tensor, mode=mode, weights=safe * huber)
-
-
-def _project_weighted(
-    *,
-    tensor: torch.Tensor,
-    mode: int,
-    weights: torch.Tensor,
-) -> torch.Tensor:
-    line_ids = _make_line_ids(tensor.shape, mode, tensor.device).reshape(-1)
-    values = tensor.reshape(-1)
-    flat_weights = weights.reshape(-1)
-
-    unique, inverse = torch.unique(line_ids, sorted=True, return_inverse=True)
-    sums = torch.zeros(
-        unique.numel(),
-        dtype=tensor.dtype,
-        device=tensor.device,
-    )
-    counts = torch.zeros_like(sums)
-    sums.scatter_add_(0, inverse, flat_weights * values)
-    counts.scatter_add_(0, inverse, flat_weights)
-    denominator = torch.where(counts == 0, torch.ones_like(counts), counts)
-    return (sums / denominator)[inverse].reshape(tensor.shape)
-
-
-def _make_line_ids(
-    shape: torch.Size | tuple[int, int],
-    mode: int,
-    device: torch.device,
-) -> torch.Tensor:
-    row_step, col_step = PARALLEL_OFFSETS[mode]
-    height, width = shape
-    rows = torch.arange(height, device=device)[:, None]
-    cols = torch.arange(width, device=device)[None, :]
-    return col_step * rows - row_step * cols
-
-
-def _blocked_repeatability(
-    tensor: torch.Tensor,
-    mode: int,
-    weights: torch.Tensor,
-) -> float:
-    values = tensor.detach().cpu().numpy().astype(np.float64, copy=False)
-    safe = weights.detach().cpu().numpy().astype(np.float64, copy=False)
-    height, width = values.shape
-    rows, cols = np.indices((height, width), dtype=np.int64)
-    row_step, col_step = PARALLEL_OFFSETS[mode]
-    line_ids = col_step * rows - row_step * cols
-    along = row_step * rows + col_step * cols
-
-    flat_lines = line_ids.reshape(-1)
-    unique, inverse = np.unique(flat_lines, return_inverse=True)
-    flat_along = along.reshape(-1).astype(np.float64)
-    minima = np.full(unique.size, np.inf, dtype=np.float64)
-    maxima = np.full(unique.size, -np.inf, dtype=np.float64)
-    np.minimum.at(minima, inverse, flat_along)
-    np.maximum.at(maxima, inverse, flat_along)
-    span = maxima[inverse] - minima[inverse]
-    position = np.divide(
-        flat_along - minima[inverse],
-        span,
-        out=np.full_like(flat_along, 0.5),
-        where=span > 0,
-    )
-
-    flat_values = values.reshape(-1)
-    flat_weights = np.clip(safe.reshape(-1), 0.0, 1.0)
-    profiles: list[np.ndarray] = []
-    masks: list[np.ndarray] = []
-    quarter_masks = (
-        position <= 0.25,
-        (position > 0.25) & (position <= 0.5),
-        (position > 0.5) & (position <= 0.75),
-        position > 0.75,
-    )
-    for selected in quarter_masks:
-        sums = np.zeros(unique.size, dtype=np.float64)
-        counts = np.zeros(unique.size, dtype=np.float64)
-        selected_inverse = inverse[selected]
-        selected_weights = flat_weights[selected]
-        np.add.at(sums, selected_inverse, selected_weights * flat_values[selected])
-        np.add.at(counts, selected_inverse, selected_weights)
-        profiles.append(np.divide(sums, counts, out=np.zeros_like(sums), where=counts > 0))
-        masks.append(counts > 0)
-
-    pairwise: list[tuple[float, int, int]] = []
-    centered_profiles = [profile - float(profile.mean()) for profile in profiles]
-    consensus = sum(centered_profiles) / len(centered_profiles)
-    consensus_power = float(np.dot(consensus, consensus))
-    if consensus_power <= _EPS:
-        return 0.0
-    gains = [
-        float(np.dot(profile, consensus) / consensus_power)
-        for profile in centered_profiles
-    ]
-    if min(gains) <= 0.0 or max(gains) / min(gains) > _MAX_QUARTER_GAIN_RATIO:
-        return 0.0
-    for first_idx in range(4):
-        for second_idx in range(first_idx + 1, 4):
-            usable = masks[first_idx] & masks[second_idx]
-            if int(np.count_nonzero(usable)) < 2:
-                return 0.0
-            first = profiles[first_idx][usable].copy()
-            second = profiles[second_idx][usable].copy()
-            first -= float(first.mean())
-            second -= float(second.mean())
-            denominator = float(np.linalg.norm(first) * np.linalg.norm(second))
-            if not math.isfinite(denominator) or denominator <= _EPS:
-                return 0.0
-            cosine = float(np.dot(first, second) / denominator)
-            pairwise.append(
-                (float(np.clip(cosine, 0.0, 1.0)), first_idx, second_idx)
-            )
-
-    parents = list(range(4))
-
-    def find(index: int) -> int:
-        while parents[index] != index:
-            parents[index] = parents[parents[index]]
-            index = parents[index]
-        return index
-
-    selected_edges: list[float] = []
-    for cosine, first_idx, second_idx in sorted(pairwise, reverse=True):
-        first_root = find(first_idx)
-        second_root = find(second_idx)
-        if first_root == second_root or cosine <= 0.0:
-            continue
-        parents[second_root] = first_root
-        selected_edges.append(cosine)
-        if len(selected_edges) == 3:
-            break
-    if len(selected_edges) != 3:
-        return 0.0
-    return min(selected_edges)
-
-
-def _positive_centered_cosine(
-    first: torch.Tensor,
-    second: torch.Tensor,
-) -> float:
-    centered_first = first - first.mean()
-    centered_second = second - second.mean()
-    denominator = torch.linalg.vector_norm(centered_first) * torch.linalg.vector_norm(
-        centered_second
-    )
-    if (
-        not math.isfinite(float(denominator.item()))
-        or float(denominator.item()) <= _EPS
-    ):
-        return 0.0
-    correlation = torch.sum(centered_first * centered_second) / denominator
-    return float(torch.nan_to_num(correlation).clamp(0.0, 1.0).item())
-
-
-def _choose_alpha(
-    *,
-    input_profile: torch.Tensor,
-    proposal_profile: torch.Tensor,
-    reliability: float,
-    leakage: float,
-) -> float:
-    normalizer = float(torch.sum(input_profile.square()).item()) + _EPS
-    a_value = float(torch.sum(proposal_profile.square()).item()) / normalizer
-    a_value += max(0.0, float(leakage))
-    b_value = float(reliability) * float(
-        torch.sum(input_profile * proposal_profile).item()
-    ) / normalizer
-    return float(np.clip(b_value / (a_value + _EPS), 0.0, 1.0))
+    return values

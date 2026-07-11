@@ -13,7 +13,6 @@ from destripe.core import UniversalStripeRemover
 from destripe.preprocess import prepare_solver_gray, resize_to_shape
 
 
-BASELINE_LEVEL = 2
 BASELINE_PROCESS_SIZE = 512
 BASELINE_ITERATIONS = 1000
 BASELINE_TILES = 2
@@ -60,12 +59,11 @@ def run_adaptive_baseline(
 
     normalized = (values - low) / scale
     solver_gray = prepare_solver_gray(gray=normalized, process_size=process_size)
-    params = estimate_adaptive_params(solver_gray, level=BASELINE_LEVEL)
+    params = estimate_adaptive_params(solver_gray)
     tile_mus = tuple(
         estimate_tile_mus(
             solver_gray,
             tiles=BASELINE_TILES,
-            level=BASELINE_LEVEL,
             directions=params.directions,
         )
     )

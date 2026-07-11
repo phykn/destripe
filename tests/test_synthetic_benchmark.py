@@ -7,7 +7,6 @@ import numpy as np
 import pytest
 
 from benchmarks.performance import main as performance_main
-from benchmarks.hybrid_quality import QualityRow, quality_failures
 from benchmarks.synthetic import (
     PatternSpec,
     RESULT_FIELDS,
@@ -21,7 +20,7 @@ from benchmarks.synthetic import (
     run_benchmark,
     structural_similarity,
 )
-from destripe.automatic import PARALLEL_OFFSETS
+from destripe.adaptive.constants import PARALLEL_OFFSETS
 
 
 @pytest.mark.parametrize("mode", range(5))
@@ -230,25 +229,6 @@ def test_structural_similarity_is_one_for_identical_images() -> None:
     image = np.random.default_rng(5).random((32, 32))
 
     assert structural_similarity(image, image) == pytest.approx(1.0)
-
-
-def test_hybrid_quality_rejects_unsupported_region_damage() -> None:
-    row = QualityRow(
-        sample="sample_02.tif",
-        case="interrupted:center",
-        mode=0,
-        strength=0.03,
-        input_psnr=40.0,
-        output_psnr=41.0,
-        input_ssim=0.99,
-        output_ssim=0.995,
-        unsupported_input_mse=0.0,
-        unsupported_output_mse=1e-6,
-    )
-
-    failures = quality_failures([row])
-
-    assert any("unsupported MSE" in failure for failure in failures)
 
 
 def test_default_patterns_cover_all_directions_and_two_vertical_guards() -> None:
@@ -543,9 +523,7 @@ def test_readme_documents_simple_automatic_and_manual_paths() -> None:
 
     assert "clean = destripe(image, process_size=256)" in readme
     assert "UniversalStripeRemover" in readme
-    assert "weak oblique" in readme.lower()
-    assert "h3-guided pdhg" in readme.lower()
-    assert "interrupted curtains" in readme.lower()
+    assert "adaptive PDHG" in readme
     for stale in ("adaptive=", "Adaptive Mode", "tile-mu", "tiles="):
         assert stale not in readme
 
@@ -555,7 +533,7 @@ def test_project_metadata_and_ruff_notebook_scope_match_automatic_api() -> None:
         encoding="utf-8"
     )
 
-    assert "automatic h3-guided pdhg hybrid" in pyproject.lower()
+    assert "automatic adaptive pdhg stripe removal" in pyproject.lower()
     assert '[tool.ruff.lint.per-file-ignores]' in pyproject
     assert '"notebooks/*.ipynb" = ["E402"]' in pyproject
 

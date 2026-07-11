@@ -5,7 +5,6 @@ import numpy as np
 import pytest
 
 from benchmarks.adaptive_baseline import (
-    BASELINE_LEVEL,
     run_adaptive_baseline,
 )
 from destripe.adaptive import estimate_adaptive_params, estimate_tile_mus
@@ -26,7 +25,7 @@ def _sample_one_solver_gray() -> np.ndarray:
 def test_restored_adaptive_estimator_matches_frozen_sample_one_diagnostics() -> None:
     gray = _sample_one_solver_gray()
 
-    params = estimate_adaptive_params(gray, level=BASELINE_LEVEL)
+    params = estimate_adaptive_params(gray)
 
     assert params.directions == (0, 4)
     assert params.mu1 == 0.25
@@ -41,7 +40,6 @@ def test_restored_tile_parameters_match_frozen_sample_one_diagnostics() -> None:
         estimate_tile_mus(
             gray,
             tiles=2,
-            level=BASELINE_LEVEL,
             directions=(0, 4),
         )
     )

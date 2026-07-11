@@ -17,7 +17,6 @@ DIRECTION_MODES = (0, 1, 2, 3, 4)
 class _SolveResult:
     clean: torch.Tensor
     iterations: int
-    components: tuple[torch.Tensor, ...] = ()
 
 
 class UniversalStripeRemover:
@@ -84,13 +83,7 @@ class UniversalStripeRemover:
         if input_tensor.dim() not in {2, 3}:
             raise ValueError("image must have shape (H, W) or (N, H, W).")
         if min(input_tensor.shape[-2:]) < 2:
-            return _SolveResult(
-                clean=input_tensor.clone(),
-                iterations=0,
-                components=tuple(
-                    torch.zeros_like(input_tensor) for _ in self.directions
-                ),
-            )
+            return _SolveResult(clean=input_tensor.clone(), iterations=0)
 
         squeeze_batch = input_tensor.dim() == 2
         if squeeze_batch:
@@ -104,15 +97,7 @@ class UniversalStripeRemover:
             verbose=verbose,
         )
         clean = result.clean.squeeze(0) if squeeze_batch else result.clean
-        components = tuple(
-            component.squeeze(0) if squeeze_batch else component
-            for component in result.components
-        )
-        return _SolveResult(
-            clean=clean,
-            iterations=result.iterations,
-            components=components,
-        )
+        return _SolveResult(clean=clean, iterations=result.iterations)
 
     def process_tiled(
         self,
@@ -281,152 +266,6 @@ class UniversalStripeRemover:
             overlap_pixels : overlap_pixels + padded_h,
             overlap_pixels : overlap_pixels + padded_w,
         ][:orig_h, :orig_w]
-
-    def _process_tiled_with_info(
-        self,
-        image: torch.Tensor | np.ndarray,
-        *,
-        tiles: int,
-        iterations: int,
-        tol: float,
-        overlap: int,
-        proj: bool,
-        verbose: bool = False,
-        tile_mus: Sequence[tuple[float, float]] | None = None,
-    ) -> _SolveResult:
-        self._validate_solver_params(iterations=iterations, tol=tol)
-        self._validate_tiling_params(tiles=tiles, overlap=overlap)
-        image_2d = self._convert_to_tensor(x=image)
-        self._validate_finite_tensor(name="image", x=image_2d)
-        if image_2d.dim() == 3 and image_2d.shape[0] == 1:
-            image_2d = image_2d.squeeze(0)
-        if image_2d.dim() != 2:
-            raise ValueError("image must have shape (H, W) or (1, H, W).")
-
-        tile_mu_values = None
-        if tile_mus is not None:
-            tile_mu_values = self._validate_tile_mus(
-                tile_mus=tile_mus,
-                expected_count=tiles * tiles,
-            )
-        if tiles <= 1:
-            if tile_mu_values is None:
-                return self._process_with_info(
-                    image_2d,
-                    iterations=iterations,
-                    tol=tol,
-                    proj=proj,
-                    verbose=verbose,
-                )
-            mu1, mu2 = tile_mu_values[0]
-            result = self._solve(
-                data=image_2d.unsqueeze(0),
-                iterations=iterations,
-                tol=tol,
-                proj=proj,
-                verbose=verbose,
-                mu1=mu1,
-                mu2=mu2,
-            )
-            return _SolveResult(
-                clean=result.clean.squeeze(0),
-                iterations=result.iterations,
-                components=tuple(item.squeeze(0) for item in result.components),
-            )
-
-        orig_h, orig_w = image_2d.shape
-        pad_bottom = (tiles - orig_h % tiles) % tiles
-        pad_right = (tiles - orig_w % tiles) % tiles
-        padded_h = orig_h + pad_bottom
-        padded_w = orig_w + pad_right
-        core_h, core_w = padded_h // tiles, padded_w // tiles
-        if core_h < 2 or core_w < 2:
-            return self._process_with_info(
-                image_2d,
-                iterations=iterations,
-                tol=tol,
-                proj=proj,
-                verbose=verbose,
-            )
-
-        padded = self._pad_reflect(
-            t=image_2d,
-            pad_bottom=pad_bottom,
-            pad_right=pad_right,
-        )
-        overlap_pixels = min(overlap, core_h // 4, core_w // 4)
-        padded = self._pad_reflect(
-            t=padded,
-            pad_top=overlap_pixels,
-            pad_bottom=overlap_pixels,
-            pad_left=overlap_pixels,
-            pad_right=overlap_pixels,
-        )
-        tile_h = core_h + 2 * overlap_pixels
-        tile_w = core_w + 2 * overlap_pixels
-        indices = [(row, col) for row in range(tiles) for col in range(tiles)]
-        tile_tensor = torch.stack(
-            [
-                padded[
-                    row * core_h : row * core_h + tile_h,
-                    col * core_w : col * core_w + tile_w,
-                ]
-                for row, col in indices
-            ]
-        )
-        if tile_mu_values is None:
-            tile_result = self._process_with_info(
-                tile_tensor,
-                iterations=iterations,
-                tol=tol,
-                proj=proj,
-                verbose=verbose,
-            )
-        else:
-            mu1, mu2 = self._make_tile_mu_tensors(
-                tile_mus=tile_mu_values,
-                ref=tile_tensor,
-            )
-            tile_result = self._solve(
-                data=tile_tensor,
-                iterations=iterations,
-                tol=tol,
-                proj=proj,
-                verbose=verbose,
-                mu1=mu1,
-                mu2=mu2,
-            )
-        weight = self._make_cosine_window(
-            h=tile_h,
-            w=tile_w,
-            margin=overlap_pixels,
-        ).to(device=tile_result.clean.device, dtype=tile_result.clean.dtype)
-
-        def blend(values: torch.Tensor) -> torch.Tensor:
-            canvas = torch.zeros(
-                padded_h + 2 * overlap_pixels,
-                padded_w + 2 * overlap_pixels,
-                device=values.device,
-                dtype=values.dtype,
-            )
-            weight_sum = torch.zeros_like(canvas)
-            for index, (row, col) in enumerate(indices):
-                y0, x0 = row * core_h, col * core_w
-                canvas[y0 : y0 + tile_h, x0 : x0 + tile_w] += (
-                    values[index] * weight
-                )
-                weight_sum[y0 : y0 + tile_h, x0 : x0 + tile_w] += weight
-            canvas /= weight_sum.clamp(min=1e-9)
-            return canvas[
-                overlap_pixels : overlap_pixels + padded_h,
-                overlap_pixels : overlap_pixels + padded_w,
-            ][:orig_h, :orig_w]
-
-        return _SolveResult(
-            clean=blend(tile_result.clean),
-            iterations=tile_result.iterations,
-            components=tuple(blend(item) for item in tile_result.components),
-        )
 
     @staticmethod
     def _make_tile_mu_tensors(
@@ -633,11 +472,7 @@ class UniversalStripeRemover:
         if verbose:
             print("")
 
-        return _SolveResult(
-            clean=clean.cpu(),
-            iterations=executed_iterations,
-            components=tuple(component.cpu() for component in stripe_components),
-        )
+        return _SolveResult(clean=clean.cpu(), iterations=executed_iterations)
 
     @staticmethod
     def _make_solver_mu_tensor(

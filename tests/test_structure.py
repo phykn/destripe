@@ -6,7 +6,8 @@ def test_simple_automatic_wrapper_structure() -> None:
     ops_source = (root / "ops.py").read_text(encoding="utf-8")
 
     assert (root / "automatic.py").exists()
-    assert not (root / "adaptive").exists()
+    assert (root / "adaptive").is_dir()
+    assert not (root / "hybrid.py").exists()
     assert "from .automatic import automatic_clean" in ops_source
     assert "UniversalStripeRemover" not in ops_source
     assert "adaptive_level" not in ops_source

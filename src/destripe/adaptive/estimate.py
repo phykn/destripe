@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .constants import ADAPTIVE_LEVELS, ALL_DIRECTIONS, MU1_DENOMINATORS
+from .constants import ALL_DIRECTIONS, MU1_DENOMINATORS
 from .directions import (
     make_score_weights,
     make_selection_weights,
@@ -24,10 +24,8 @@ class AdaptiveParams:
 def estimate_adaptive_params(
     gray: np.ndarray,
     *,
-    level: int,
     fixed_directions: tuple[int, ...] | None = None,
 ) -> AdaptiveParams:
-    level_value = _validate_level(level)
     fixed = (
         None
         if fixed_directions is None
@@ -43,7 +41,7 @@ def estimate_adaptive_params(
         if fixed is None
         else fixed
     )
-    mu1 = 1 / MU1_DENOMINATORS[level_value]
+    mu1 = 1 / MU1_DENOMINATORS[2]
     mu2, confidence = estimate_strength(
         high_pass=high_pass,
         selected_directions=tuple(selected),
@@ -56,16 +54,6 @@ def estimate_adaptive_params(
         mu2=mu2,
         confidence=confidence,
     )
-
-
-def _validate_level(level: object) -> int:
-    if isinstance(level, bool) or not isinstance(level, int):
-        raise ValueError("adaptive must be an integer level 0..3.")
-    if level not in ADAPTIVE_LEVELS:
-        raise ValueError("adaptive must be an integer level 0..3.")
-    return level
-
-
 def _validate_fixed_modes(requested: object) -> tuple[int, ...]:
     message = "directions must be a non-empty sequence of unique modes 0..4."
     if not isinstance(requested, (tuple, list)):
