@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 from destripe.adaptive import estimate_adaptive_params
+from destripe.adaptive.constants import PARALLEL_OFFSETS
 from destripe.adaptive.directions import (
     make_selection_weights,
     score_directions,
@@ -33,6 +34,20 @@ def _make_multidirection_image(edge_amplitude: float) -> tuple[np.ndarray, np.nd
     target = 0.5 + edge
     stripe = 0.03 * np.sin(2 * np.pi * 3 * cols / 32)
     return target + stripe, target
+
+
+def _make_directional_stripe(
+    mode: int,
+    *,
+    shape: tuple[int, int] = (64, 64),
+    cycles: int = 6,
+    amplitude: float = 0.05,
+) -> np.ndarray:
+    rows, cols = np.indices(shape)
+    row_step, col_step = PARALLEL_OFFSETS[mode]
+    line_ids = col_step * rows - row_step * cols
+    phase = (line_ids - line_ids.min()) / (line_ids.max() - line_ids.min() + 1)
+    return 0.5 + amplitude * np.sin(2 * np.pi * cycles * phase)
 
 
 def test_automatic_rejects_nonnumeric_gray() -> None:
@@ -93,6 +108,42 @@ def test_automatic_preserves_vertical_step_edge() -> None:
     np.testing.assert_array_equal(result.clean, image)
 
 
+@pytest.mark.parametrize("row_bounds", ((16, 32), (0, 32), (0, 36), (6, 42)))
+def test_automatic_preserves_partial_height_vertical_structures(
+    row_bounds: tuple[int, int],
+) -> None:
+    image = np.zeros((48, 64), dtype=np.float64)
+    start, stop = row_bounds
+    image[start:stop, 8:16] = 0.6
+    image[start:stop, 40:52] = 1.0
+
+    result = automatic_clean(image, proj=True)
+
+    assert result.directions == ()
+    np.testing.assert_array_equal(result.clean, image)
+
+
+def test_automatic_preserves_gradient_with_unstructured_noise() -> None:
+    rows, cols = np.indices((48, 64))
+    target = 0.2 + 0.6 * (rows / 47 + cols / 63) / 2
+    image = target + np.random.default_rng(123).normal(0.0, 0.01, target.shape)
+
+    result = automatic_clean(image, proj=True)
+
+    assert result.directions == ()
+    np.testing.assert_array_equal(result.clean, image)
+
+
+def test_gradient_with_low_noise_is_rejected_across_random_seeds() -> None:
+    rows, cols = np.indices((48, 64))
+    target = 0.2 + 0.6 * (rows / 47 + cols / 63) / 2
+
+    for seed in range(100):
+        image = target + np.random.default_rng(seed).normal(0.0, 0.005, target.shape)
+
+        assert estimate_adaptive_params(image).directions == ()
+
+
 def test_vertical_gradient_decision_is_resolution_invariant() -> None:
     images = tuple(
         np.broadcast_to(np.linspace(0.0, 1.0, width), (height, width)).copy()
@@ -114,6 +165,45 @@ def test_vertical_gradient_decision_is_resolution_invariant() -> None:
         np.testing.assert_array_equal(result.clean, image)
 
 
+def test_smooth_stripe_repetition_is_resolution_invariant() -> None:
+    for width in (64, 128, 256, 512):
+        height = round(width * 0.75)
+        profile = 0.5 + 0.05 * np.sin(
+            np.linspace(0.0, 4 * np.pi, width, endpoint=False)
+        )
+        image = np.broadcast_to(profile, (height, width)).copy()
+
+        params = estimate_adaptive_params(image)
+
+        assert params.directions == (0,)
+        assert params.profile_repetition == 1.0
+
+
+def test_native_analysis_preserves_narrow_high_resolution_stripes() -> None:
+    for width in (512, 1024):
+        profile = 0.5 + 0.05 * ((-1.0) ** np.arange(width))
+        image = np.broadcast_to(profile, (256, width)).copy()
+
+        analysis = make_analysis_tensor(image)
+        params = estimate_adaptive_params(image)
+
+        assert analysis.shape == image.shape
+        assert float((analysis.max() - analysis.min()).item()) > 0.0
+        assert params.directions == (0,)
+
+
+def test_native_analysis_preserves_stripes_above_the_former_budget() -> None:
+    profile = 0.5 + 0.05 * ((-1.0) ** np.arange(1024))
+    image = np.broadcast_to(profile, (257, 1024)).copy()
+
+    analysis = make_analysis_tensor(image)
+    params = estimate_adaptive_params(image)
+
+    assert analysis.shape == image.shape
+    assert float((analysis.max() - analysis.min()).item()) > 0.0
+    assert params.directions == (0,)
+
+
 def test_aperiodic_stripes_have_distributed_profile_evidence() -> None:
     rng = np.random.default_rng(17)
     knots = rng.normal(0.0, 1.0, 17)
@@ -129,20 +219,39 @@ def test_aperiodic_stripes_have_distributed_profile_evidence() -> None:
     assert params.stripe_evidence >= AUTOMATIC_MIN_STRIPE_EVIDENCE
 
 
-def test_repeated_stripe_survives_stronger_nonrepeated_edge() -> None:
-    image, target = _make_multidirection_image(edge_amplitude=0.2)
+@pytest.mark.parametrize("mode", range(5))
+def test_direction_coverage_preserves_all_supported_stripe_modes(mode: int) -> None:
+    params = estimate_adaptive_params(_make_directional_stripe(mode))
+
+    assert params.directions == (mode,)
+    assert params.profile_repetition == 1.0
+
+
+def test_stripe_is_reselected_after_dominant_edge_is_rejected() -> None:
+    image, target = _make_multidirection_image(edge_amplitude=0.3)
 
     high_pass = extract_high_pass(make_analysis_tensor(image))
-    initial = select_directions(make_selection_weights(score_directions(high_pass)))
+    initial_weights = make_selection_weights(score_directions(high_pass))
+    initial = select_directions(initial_weights)
     params = estimate_adaptive_params(image)
     result = automatic_clean(image, proj=True)
 
-    assert initial == (1, 0)
+    assert initial == (1,)
+    assert initial_weights[0] == 0.0
     assert params.directions == (0,)
     assert result.directions == (0,)
     input_rms = float(np.sqrt(np.mean((image - target) ** 2)))
     result_rms = float(np.sqrt(np.mean((result.clean - target) ** 2)))
     assert result_rms < input_rms
+
+
+def test_direction_coverage_preserves_stripe_under_strong_edge() -> None:
+    image, _ = _make_multidirection_image(edge_amplitude=0.35)
+
+    params = estimate_adaptive_params(image)
+
+    assert params.directions == (0,)
+    assert params.profile_repetition == 1.0
 
 
 def test_nonrepeated_secondary_direction_is_not_sent_to_solver() -> None:
@@ -185,6 +294,26 @@ def test_thin_analysis_uses_only_supported_directions_and_one_tile() -> None:
     assert _select_tile_count(image.shape) == 1
 
 
+def test_small_images_use_full_frame_solver() -> None:
+    assert _select_tile_count((64, 64)) == 1
+    assert _select_tile_count((128, 128)) == 1
+    assert _select_tile_count((256, 256)) == 2
+
+
+def test_small_diagonal_stripe_full_frame_quality(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("destripe.automatic.AUTOMATIC_ITERATIONS", 300)
+    target = np.full((64, 64), 0.5)
+    image = _make_directional_stripe(2, cycles=4, amplitude=0.03)
+
+    result = automatic_clean(image, proj=True)
+
+    assert result.directions == (2,)
+    result_rms = float(np.sqrt(np.mean((result.clean - target) ** 2)))
+    assert result_rms < 0.0045
+
+
 def test_automatic_restores_preferred_sample_configuration() -> None:
     encoded = cv2.imread(str(ASSET_DIR / "sample.jpeg"), cv2.IMREAD_GRAYSCALE)
     assert encoded is not None
@@ -201,7 +330,7 @@ def test_automatic_restores_preferred_sample_configuration() -> None:
     assert result.clean.shape == processed.shape
     assert np.isfinite(result.clean).all()
     correction_rms = float(np.sqrt(np.mean((processed - result.clean) ** 2)))
-    assert correction_rms == pytest.approx(0.02975459, abs=1e-6)
+    assert correction_rms == pytest.approx(0.02971715, abs=1e-6)
 
 
 def test_automatic_is_deterministic() -> None:

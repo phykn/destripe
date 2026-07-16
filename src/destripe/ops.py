@@ -50,7 +50,7 @@ def destripe(
     min_value = float(normalized.min())
     max_value = float(normalized.max())
     intensity_scale = max_value - min_value
-    if intensity_scale < 1e-12:
+    if intensity_scale == 0.0:
         return input_array.copy()
     restore_magnitude: float | None = None
     restore_offset = min_value

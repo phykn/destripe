@@ -227,6 +227,21 @@ class TestProcess:
         assert result is not img
         assert torch.equal(result, img)
 
+    @pytest.mark.parametrize("proj", [False, True])
+    def test_single_pixel_axis_honors_projection_and_cpu_output(
+        self,
+        proj: bool,
+    ) -> None:
+        input_device = "cuda" if torch.cuda.is_available() else "cpu"
+        remover = UniversalStripeRemover(device=input_device)
+        image = torch.tensor([[-0.5, 1.5]], device=input_device)
+
+        result = remover.process(image=image, iterations=1, proj=proj)
+
+        expected = image.clamp(0, 1) if proj else image
+        assert result.device.type == "cpu"
+        torch.testing.assert_close(result, expected.cpu())
+
 
 class TestProcessTiled:
     def test_tiles_1_fallback(self, remover: UniversalStripeRemover) -> None:
@@ -244,6 +259,21 @@ class TestProcessTiled:
         img = torch.rand(32, 32)
         result = remover.process_tiled(image=img, tiles=4, iterations=5, overlap=10_000)
         assert result.shape == (32, 32)
+
+    @pytest.mark.parametrize("proj", [False, True])
+    def test_single_pixel_axis_honors_projection_and_cpu_output(
+        self,
+        proj: bool,
+    ) -> None:
+        input_device = "cuda" if torch.cuda.is_available() else "cpu"
+        remover = UniversalStripeRemover(device=input_device)
+        image = torch.tensor([[-0.5, 1.5]], device=input_device)
+
+        result = remover.process_tiled(image=image, iterations=1, proj=proj)
+
+        expected = image.clamp(0, 1) if proj else image
+        assert result.device.type == "cpu"
+        torch.testing.assert_close(result, expected.cpu())
 
     def test_invalid_batch(self, remover: UniversalStripeRemover) -> None:
         with pytest.raises(ValueError, match="shape"):
@@ -758,6 +788,25 @@ class TestDestripe:
 
         assert np.array_equal(result, image)
         assert result is not image
+
+    def test_nonconstant_subpicounit_range_runs_automatic_detection(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        seen: dict[str, float] = {}
+
+        def fake_automatic_clean(gray: np.ndarray, *, proj: bool) -> object:
+            seen["minimum"] = float(gray.min())
+            seen["maximum"] = float(gray.max())
+            return type("Result", (), {"clean": gray.copy()})()
+
+        monkeypatch.setattr(destripe_ops, "automatic_clean", fake_automatic_clean)
+        image = np.linspace(2e-13, 7e-13, 8 * 8, dtype=np.float64).reshape(8, 8)
+
+        result = destripe(image)
+
+        assert seen == {"minimum": 0.0, "maximum": 1.0}
+        assert np.array_equal(result, image)
 
     @pytest.mark.parametrize(
         "image",

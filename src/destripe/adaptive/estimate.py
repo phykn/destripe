@@ -3,10 +3,11 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 
-from .constants import ALL_DIRECTIONS, EPS, MU1_DENOMINATORS
+from .constants import ALL_DIRECTIONS, EPS, MIN_DIRECTION_SCORE, MU1_DENOMINATORS
 from .directions import (
     make_score_weights,
     make_selection_weights,
+    measure_direction_coverage,
     score_directions,
     select_directions,
 )
@@ -39,20 +40,28 @@ def estimate_adaptive_params(
     supported = tuple(scores)
     score_weights = make_score_weights(scores)
     selection_weights = make_selection_weights(scores)
-    selected = (
-        _select_repeated_directions(high_pass, selection_weights)
-        if fixed is None
-        else fixed
-    )
-    stripe_weights = _restrict_weights(selection_weights, selected)
+    if fixed is None:
+        selected, stripe_weights, repetitions = _select_repeated_directions(
+            analysis,
+            high_pass,
+            scores,
+        )
+    else:
+        selected = fixed
+        stripe_weights = _restrict_weights(selection_weights, selected)
     mu1 = 1 / MU1_DENOMINATORS[2]
-    mu2, confidence, stripe_evidence, profile_repetition = estimate_strength(
+    mu2, confidence, stripe_evidence, strength_repetition = estimate_strength(
         high_pass=high_pass,
         selected_directions=tuple(selected),
         supported_directions=supported,
         score_weights=score_weights,
         selection_weights=selection_weights,
         stripe_weights=stripe_weights,
+    )
+    profile_repetition = (
+        min((repetitions[mode] for mode in selected), default=0.0)
+        if fixed is None
+        else strength_repetition
     )
     return AdaptiveParams(
         directions=tuple(selected),
@@ -65,15 +74,31 @@ def estimate_adaptive_params(
 
 
 def _select_repeated_directions(
+    analysis: torch.Tensor,
     high_pass: torch.Tensor,
-    selection_weights: np.ndarray,
-) -> tuple[int, ...]:
-    selected = select_directions(selection_weights)
-    return tuple(
-        mode
-        for mode in selected
-        if measure_repetition(high_pass, mode) >= MIN_PROFILE_REPETITION
-    )
+    scores: dict[int, float],
+) -> tuple[tuple[int, ...], np.ndarray, dict[int, float]]:
+    repetitions = {}
+    repeated_scores = {}
+    for mode, score in scores.items():
+        if score <= MIN_DIRECTION_SCORE:
+            continue
+        repetition = min(
+            max(
+                measure_repetition(analysis, mode),
+                measure_repetition(high_pass, mode),
+            ),
+            measure_direction_coverage(analysis, mode),
+        )
+        if repetition >= MIN_PROFILE_REPETITION:
+            repeated_scores[mode] = score
+            repetitions[mode] = repetition
+
+    if not repeated_scores:
+        return (), np.zeros(len(ALL_DIRECTIONS), dtype=np.float64), repetitions
+
+    candidate_weights = make_selection_weights(repeated_scores)
+    return select_directions(candidate_weights), candidate_weights, repetitions
 
 
 def _restrict_weights(

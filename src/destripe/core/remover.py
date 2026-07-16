@@ -72,7 +72,8 @@ class UniversalStripeRemover:
         if input_tensor.dim() not in {2, 3}:
             raise ValueError("image must have shape (H, W) or (N, H, W).")
         if min(input_tensor.shape[-2:]) < 2:
-            return SolveResult(clean=input_tensor.clone(), iterations=0)
+            clean = self._make_solver_bypass_result(image=input_tensor, proj=proj)
+            return SolveResult(clean=clean, iterations=0)
 
         squeeze_batch = input_tensor.dim() == 2
         if squeeze_batch:
@@ -137,7 +138,7 @@ class UniversalStripeRemover:
                 raise ValueError(
                     "tile_mus cannot be applied to tiles smaller than 2x2."
                 )
-            return image_2d.clone()
+            return self._make_solver_bypass_result(image=image_2d, proj=proj)
 
         if tiles <= 1:
             if tile_mu_values is None:
@@ -327,6 +328,13 @@ class UniversalStripeRemover:
             proj=proj,
             verbose=verbose,
         )
+
+    @staticmethod
+    def _make_solver_bypass_result(*, image: torch.Tensor, proj: bool) -> torch.Tensor:
+        clean = image.clone()
+        if proj:
+            clean.clamp_(min=0, max=1)
+        return clean.cpu()
 
     @staticmethod
     def _validate_solver_params(iterations: int) -> None:

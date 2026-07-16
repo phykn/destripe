@@ -13,6 +13,7 @@ AUTOMATIC_ITERATIONS = 1000
 AUTOMATIC_TILES = 2
 AUTOMATIC_OVERLAP = 64
 AUTOMATIC_MIN_TILE_SIDE = 3
+AUTOMATIC_FULL_FRAME_MAX_SIDE = 128
 AUTOMATIC_MIN_CONFIDENCE = 0.1
 AUTOMATIC_MIN_STRIPE_EVIDENCE = 0.02
 
@@ -96,6 +97,8 @@ def automatic_clean(gray: np.ndarray, *, proj: bool) -> AutomaticResult:
 
 
 def _select_tile_count(shape: tuple[int, int]) -> int:
+    if max(shape) <= AUTOMATIC_FULL_FRAME_MAX_SIDE:
+        return 1
     core_shape = tuple((dim + AUTOMATIC_TILES - 1) // AUTOMATIC_TILES for dim in shape)
     if min(core_shape) < AUTOMATIC_MIN_TILE_SIDE:
         return 1

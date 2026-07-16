@@ -2,7 +2,12 @@ import numpy as np
 import torch
 
 from .constants import ALL_DIRECTIONS, CROSS_OFFSETS, EPS, PARALLEL_OFFSETS
+from .preprocess import extract_high_pass
 from .stripe import measure_shrinkage
+
+
+DIRECTION_COVERAGE_BANDS = 4
+MIN_DIRECTION_BAND_SCORE_RATIO = 0.05
 
 
 def score_directions(high_pass: torch.Tensor) -> dict[int, float]:
@@ -10,6 +15,29 @@ def score_directions(high_pass: torch.Tensor) -> dict[int, float]:
         mode: _score_direction(high_pass, mode=mode)
         for mode in supported_directions(high_pass.shape)
     }
+
+
+def measure_direction_coverage(tensor: torch.Tensor, mode: int) -> float:
+    minimum_band_height = (
+        max(
+            abs(PARALLEL_OFFSETS[mode][0]),
+            abs(CROSS_OFFSETS[mode][0]),
+        )
+        + 1
+    )
+    band_count = min(DIRECTION_COVERAGE_BANDS, tensor.shape[0] // minimum_band_height)
+    if band_count < 2:
+        return 1.0
+
+    band_scores = [
+        _score_direction(extract_high_pass(band), mode=mode)
+        for band in torch.tensor_split(tensor, band_count, dim=0)
+    ]
+    median_score = float(np.median(band_scores))
+    if median_score <= EPS:
+        return 0.0
+    score_ratio = min(band_scores) / median_score
+    return min(1.0, max(0.0, score_ratio / MIN_DIRECTION_BAND_SCORE_RATIO))
 
 
 def make_score_weights(scores: dict[int, float]) -> np.ndarray:

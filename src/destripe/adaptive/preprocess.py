@@ -7,24 +7,7 @@ from .constants import EPS
 
 def make_analysis_tensor(gray: np.ndarray) -> torch.Tensor:
     normalized = _normalize_gray(gray)
-    tensor = torch.as_tensor(normalized, dtype=torch.float32)
-    height, width = tensor.shape
-    max_side = max(height, width)
-    if max_side <= 512:
-        return tensor
-    scale = 512 / max_side
-    size = (max(1, round(height * scale)), max(1, round(width * scale)))
-    if min(size) < 2:
-        return tensor
-    return (
-        F.interpolate(
-            tensor.unsqueeze(0).unsqueeze(0),
-            size=size,
-            mode="area",
-        )
-        .squeeze(0)
-        .squeeze(0)
-    )
+    return torch.as_tensor(normalized, dtype=torch.float32)
 
 
 def extract_high_pass(tensor: torch.Tensor) -> torch.Tensor:
