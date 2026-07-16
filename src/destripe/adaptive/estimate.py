@@ -13,7 +13,13 @@ from .directions import (
 )
 from .preprocess import extract_high_pass, make_analysis_tensor
 from .strength import estimate_strength
-from .stripe import MIN_PROFILE_REPETITION, measure_repetition
+from .stripe import (
+    MIN_PROFILE_DISTRIBUTED_PARTICIPATION,
+    MIN_PROFILE_REPETITION,
+    measure_distributed_repetition,
+    measure_profile_distribution,
+    measure_repetition,
+)
 
 
 @dataclass(frozen=True)
@@ -83,9 +89,14 @@ def _select_repeated_directions(
     for mode, score in scores.items():
         if score <= MIN_DIRECTION_SCORE:
             continue
+        if (
+            measure_profile_distribution(analysis, mode)
+            < MIN_PROFILE_DISTRIBUTED_PARTICIPATION
+        ):
+            continue
         repetition = min(
             max(
-                measure_repetition(analysis, mode),
+                measure_distributed_repetition(analysis, mode),
                 measure_repetition(high_pass, mode),
             ),
             measure_direction_coverage(analysis, mode),

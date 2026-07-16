@@ -36,6 +36,13 @@ def _make_multidirection_image(edge_amplitude: float) -> tuple[np.ndarray, np.nd
     return target + stripe, target
 
 
+def _make_full_height_bars() -> np.ndarray:
+    image = np.zeros((48, 64), dtype=np.float64)
+    image[:, 8:16] = 0.6
+    image[:, 40:52] = 1.0
+    return image
+
+
 def _make_directional_stripe(
     mode: int,
     *,
@@ -123,6 +130,94 @@ def test_automatic_preserves_partial_height_vertical_structures(
     np.testing.assert_array_equal(result.clean, image)
 
 
+def test_automatic_preserves_full_height_repeated_vertical_structures() -> None:
+    image = _make_full_height_bars()
+
+    result = automatic_clean(image, proj=True)
+
+    assert result.directions == ()
+    np.testing.assert_array_equal(result.clean, image)
+
+
+def test_automatic_preserves_clustered_equal_height_vertical_structures() -> None:
+    image = np.zeros((48, 64), dtype=np.float64)
+    image[:, 8:16] = 0.8
+    image[:, 24:32] = 0.8
+
+    result = automatic_clean(image, proj=True)
+
+    assert result.directions == ()
+    np.testing.assert_array_equal(result.clean, image)
+
+
+def test_automatic_preserves_regular_full_width_vertical_structures() -> None:
+    image = np.zeros((48, 64), dtype=np.float64)
+    for start in (4, 20, 36, 52):
+        image[:, start : start + 8] = 0.8
+
+    result = automatic_clean(image, proj=True)
+
+    assert result.directions == ()
+    np.testing.assert_array_equal(result.clean, image)
+
+
+def test_automatic_preserves_monotone_vertical_staircase() -> None:
+    image = np.zeros((48, 64), dtype=np.float64)
+    image[:, 16:32] = 0.2
+    image[:, 32:48] = 0.4
+    image[:, 48:] = 0.6
+
+    result = automatic_clean(image, proj=True)
+
+    assert result.directions == ()
+    np.testing.assert_array_equal(result.clean, image)
+
+
+def test_automatic_removes_stripe_while_preserving_full_height_bars() -> None:
+    target = _make_full_height_bars()
+    _, cols = np.indices(target.shape)
+    stripe = 0.03 * np.sin(2 * np.pi * 4 * cols / target.shape[1])
+    observed = target + stripe
+
+    result = automatic_clean(observed, proj=True)
+
+    assert result.directions == (0,)
+    input_rms = float(np.sqrt(np.mean((observed - target) ** 2)))
+    result_rms = float(np.sqrt(np.mean((result.clean - target) ** 2)))
+    assert result_rms < 0.3 * input_rms
+    assert float(np.max(np.abs(result.clean - target))) < 0.01
+
+
+def test_automatic_removes_stripe_without_damaging_vertical_step() -> None:
+    target = np.zeros((48, 64), dtype=np.float64)
+    target[:, 32:] = 1.0
+    _, cols = np.indices(target.shape)
+    stripe = 0.03 * np.sin(2 * np.pi * 4 * cols / target.shape[1])
+
+    result = automatic_clean(target + stripe, proj=True)
+
+    assert result.directions == (0,)
+    np.testing.assert_allclose(result.clean, target, atol=1e-7)
+
+
+@pytest.mark.parametrize("mode", (2, 4))
+def test_automatic_preserves_small_diagonal_repeated_structures(mode: int) -> None:
+    rows, cols = np.indices((8, 8))
+    row_step, col_step = PARALLEL_OFFSETS[mode]
+    line_ids = col_step * rows - row_step * cols
+    normalized = (line_ids - line_ids.min()) / (line_ids.max() - line_ids.min() + 1)
+    image = (
+        0.2
+        + 0.45 * ((normalized >= 0.12) & (normalized < 0.25))
+        + 0.7 * ((normalized >= 0.58) & (normalized < 0.78))
+    )
+
+    result = automatic_clean(image, proj=True)
+
+    assert result.directions == ()
+    np.testing.assert_array_equal(result.clean, image)
+
+
 def test_automatic_preserves_gradient_with_unstructured_noise() -> None:
     rows, cols = np.indices((48, 64))
     target = 0.2 + 0.6 * (rows / 47 + cols / 63) / 2
@@ -177,6 +272,48 @@ def test_smooth_stripe_repetition_is_resolution_invariant() -> None:
 
         assert params.directions == (0,)
         assert params.profile_repetition == 1.0
+
+
+@pytest.mark.parametrize(
+    ("kind", "width", "cycles"),
+    (
+        ("square", 64, 8),
+        ("square", 128, 16),
+        ("sawtooth", 64, 2),
+        ("sawtooth", 64, 4),
+        ("sawtooth", 64, 8),
+        ("sawtooth", 128, 2),
+        ("sawtooth", 128, 4),
+        ("sawtooth", 128, 8),
+    ),
+)
+def test_nonsmooth_repeated_stripes_are_not_treated_as_sparse_structure(
+    kind: str,
+    width: int,
+    cycles: int,
+) -> None:
+    phase = (cycles * np.arange(width) / width) % 1.0
+    profile = (
+        np.where(phase < 0.5, -0.05, 0.05) if kind == "square" else 0.1 * (phase - 0.5)
+    )
+    image = np.broadcast_to(0.5 + profile, (round(width * 0.75), width)).copy()
+
+    params = estimate_adaptive_params(image)
+
+    assert params.directions == (0,)
+    assert params.profile_repetition == 1.0
+
+
+def test_long_low_frequency_sawtooth_is_not_treated_as_sparse_structure() -> None:
+    width = 512
+    phase = (2 * np.arange(width) / width) % 1.0
+    profile = 0.1 * (phase - 0.5)
+    image = np.broadcast_to(0.5 + profile, (384, width)).copy()
+
+    params = estimate_adaptive_params(image)
+
+    assert params.directions == (0,)
+    assert params.profile_repetition == 1.0
 
 
 def test_native_analysis_preserves_narrow_high_resolution_stripes() -> None:

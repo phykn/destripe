@@ -19,6 +19,10 @@ resolution, or use a positive long-edge size to estimate broad curtain fields
 at lower resolution and resize the correction back. Set `proj=False` only when
 unclipped floating output is required.
 
+Native analysis scales with the image pixel count. For large images, use
+`process_size=256` or `process_size=512` to bound analysis time and memory unless
+native-resolution detection of very narrow stripes is required.
+
 The automatic path estimates supported stripe directions and `mu2` from the
 image, then runs the multi-direction PDHG solver with local 2-by-2 tile weights.
 When repeated directional evidence is too weak relative to the image high-pass
