@@ -21,7 +21,8 @@ unclipped floating output is required.
 
 The automatic path estimates supported stripe directions and `mu2` from the
 image, then runs the multi-direction PDHG solver with local 2-by-2 tile weights.
-When coherent directional amplitude is too weak, it returns the input unchanged
+When repeated directional evidence is too weak relative to the image high-pass
+energy, it returns the input unchanged
 instead of forcing a stripe direction. It finishes detected stripes with a small
 residual refinement. The public API intentionally has no adaptive tuning level;
 the quality-oriented solver configuration is kept internal and deterministic.

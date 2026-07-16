@@ -9,7 +9,7 @@ from .constants import (
     MU2_DENOMINATORS,
     NORMAL_MAD_SCALE,
 )
-from .stripe import measure_shrinkage, project
+from .stripe import measure_repetition, measure_shrinkage, project
 
 
 @dataclass(frozen=True)
@@ -18,6 +18,7 @@ class _StripeStats:
     abs_values: np.ndarray
     sigma: float
     coherence: float
+    repetition: float
 
 
 def estimate_strength(
@@ -27,7 +28,7 @@ def estimate_strength(
     supported_directions: tuple[int, ...],
     score_weights: np.ndarray,
     selection_weights: np.ndarray,
-) -> tuple[float, float, float]:
+) -> tuple[float, float, float, float]:
     supported_indices = list(supported_directions)
     supported_scores = score_weights[supported_indices]
     supported_selection = selection_weights[supported_indices]
@@ -51,12 +52,18 @@ def estimate_strength(
         stripe_stats=stripe_stats,
         selection_weights=selection_weights,
     )
+    high_pass_amplitude = float(high_pass.abs().mean().item())
+    relative_amplitude = stripe_amplitude / (high_pass_amplitude + EPS)
+    repetition = _measure_primary_repetition(
+        stripe_stats=stripe_stats,
+        selection_weights=selection_weights,
+    )
 
     mu2 = _estimate_mu2(
         stripe_stats=stripe_stats,
         selection_weights=selection_weights,
     )
-    return mu2, confidence, confidence * stripe_amplitude
+    return mu2, confidence, confidence * relative_amplitude, repetition
 
 
 def _make_stripe_stats(
@@ -82,6 +89,7 @@ def _make_stripe_stats(
                 abs_values=np.abs(values),
                 sigma=sigma,
                 coherence=coherence,
+                repetition=measure_repetition(high_pass, mode),
             )
         )
     return stats
@@ -218,6 +226,20 @@ def _measure_stripe_amplitude(
     if total_weight > EPS:
         return _average_weighted(amplitudes, weight_array, total_weight)
     return float(np.mean(amplitudes))
+
+
+def _measure_primary_repetition(
+    *,
+    stripe_stats: list[_StripeStats],
+    selection_weights: np.ndarray,
+) -> float:
+    if not stripe_stats:
+        return 0.0
+    primary = max(
+        stripe_stats,
+        key=lambda stats: (selection_weights[stats.mode], -stats.mode),
+    )
+    return primary.repetition
 
 
 def _average_weighted(

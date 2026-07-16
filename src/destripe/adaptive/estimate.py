@@ -20,6 +20,7 @@ class AdaptiveParams:
     mu2: float
     confidence: float
     stripe_evidence: float
+    profile_repetition: float
 
 
 def estimate_adaptive_params(
@@ -38,7 +39,7 @@ def estimate_adaptive_params(
     selection_weights = make_selection_weights(scores)
     selected = select_directions(selection_weights) if fixed is None else fixed
     mu1 = 1 / MU1_DENOMINATORS[2]
-    mu2, confidence, stripe_evidence = estimate_strength(
+    mu2, confidence, stripe_evidence, profile_repetition = estimate_strength(
         high_pass=high_pass,
         selected_directions=tuple(selected),
         supported_directions=supported,
@@ -51,6 +52,7 @@ def estimate_adaptive_params(
         mu2=mu2,
         confidence=confidence,
         stripe_evidence=stripe_evidence,
+        profile_repetition=profile_repetition,
     )
 
 

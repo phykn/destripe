@@ -4,9 +4,14 @@ import cv2
 import numpy as np
 import pytest
 
+from destripe.adaptive import estimate_adaptive_params
 from destripe.adaptive.directions import score_directions, supported_directions
 from destripe.adaptive.preprocess import extract_high_pass, make_analysis_tensor
-from destripe.automatic import _select_tile_count, automatic_clean
+from destripe.automatic import (
+    AUTOMATIC_MIN_STRIPE_EVIDENCE,
+    _select_tile_count,
+    automatic_clean,
+)
 from destripe.preprocess import prepare_solver_gray
 
 
@@ -59,6 +64,49 @@ def test_automatic_noops_without_coherent_stripe_evidence() -> None:
 
         assert result.directions == ()
         np.testing.assert_array_equal(result.clean, image)
+
+
+def test_automatic_preserves_vertical_step_edge() -> None:
+    image = np.zeros((48, 64), dtype=np.float64)
+    image[:, 32:] = 1.0
+
+    result = automatic_clean(image, proj=True)
+
+    assert result.directions == ()
+    np.testing.assert_array_equal(result.clean, image)
+
+
+def test_vertical_gradient_decision_is_resolution_invariant() -> None:
+    images = tuple(
+        np.broadcast_to(np.linspace(0.0, 1.0, width), (height, width)).copy()
+        for height, width in ((48, 64), (128, 128))
+    )
+    params = tuple(estimate_adaptive_params(image) for image in images)
+
+    assert params[0].stripe_evidence == pytest.approx(
+        params[1].stripe_evidence,
+        rel=1e-4,
+    )
+    assert all(item.profile_repetition < 1.0 for item in params)
+    for image in images:
+        result = automatic_clean(image, proj=True)
+        assert result.directions == ()
+        np.testing.assert_array_equal(result.clean, image)
+
+
+def test_aperiodic_stripes_have_distributed_profile_evidence() -> None:
+    rng = np.random.default_rng(17)
+    knots = rng.normal(0.0, 1.0, 17)
+    profile = np.interp(np.linspace(0.0, 16.0, 64), np.arange(17), knots)
+    profile -= profile.mean()
+    profile *= 0.04 / profile.std()
+    image = np.clip(0.45 + profile[None, :] + np.zeros((48, 1)), 0.0, 1.0)
+
+    params = estimate_adaptive_params(image)
+
+    assert params.directions == (0,)
+    assert params.profile_repetition == 1.0
+    assert params.stripe_evidence >= AUTOMATIC_MIN_STRIPE_EVIDENCE
 
 
 def test_thin_analysis_uses_only_supported_directions_and_one_tile() -> None:

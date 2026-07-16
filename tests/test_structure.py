@@ -1,6 +1,13 @@
 from pathlib import Path
 
 
+def test_declared_python_version_matches_annotation_syntax() -> None:
+    root = Path(__file__).resolve().parents[1]
+    pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
+
+    assert 'requires-python = ">=3.10"' in pyproject
+
+
 def test_simple_automatic_wrapper_structure() -> None:
     root = Path(__file__).resolve().parents[1] / "src" / "destripe"
     ops_source = (root / "ops.py").read_text(encoding="utf-8")

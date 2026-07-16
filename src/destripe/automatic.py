@@ -13,7 +13,8 @@ AUTOMATIC_TILES = 2
 AUTOMATIC_OVERLAP = 64
 AUTOMATIC_MIN_TILE_SIDE = 3
 AUTOMATIC_MIN_CONFIDENCE = 0.1
-AUTOMATIC_MIN_STRIPE_EVIDENCE = 0.001
+AUTOMATIC_MIN_STRIPE_EVIDENCE = 0.02
+AUTOMATIC_MIN_PROFILE_REPETITION = 1.0
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,7 @@ def automatic_clean(gray: np.ndarray, *, proj: bool) -> AutomaticResult:
     if (
         params.confidence < AUTOMATIC_MIN_CONFIDENCE
         or params.stripe_evidence < AUTOMATIC_MIN_STRIPE_EVIDENCE
+        or params.profile_repetition < AUTOMATIC_MIN_PROFILE_REPETITION
     ):
         return AutomaticResult(
             clean=np.clip(values, 0.0, 1.0) if proj else values.copy(),
