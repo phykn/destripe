@@ -9,7 +9,7 @@ import destripe.ops as destripe_ops
 from destripe import preprocess
 from destripe import UniversalStripeRemover, destripe
 from destripe.core import operators
-from destripe.core.remover import _SolveResult
+from destripe.core.solver import SolveResult
 
 
 @pytest.fixture()
@@ -341,10 +341,10 @@ class TestProcessTiled:
     ) -> None:
         original_mu1, original_mu2 = remover.mu1, remover.mu2
 
-        def fail_solve(**_: object) -> torch.Tensor:
+        def fail_solve(**_: object) -> SolveResult:
             raise RuntimeError("forced tile failure")
 
-        monkeypatch.setattr(remover, "_solve", fail_solve)
+        monkeypatch.setattr(remover, "_run_solver", fail_solve)
 
         with pytest.raises(RuntimeError, match="forced tile failure"):
             remover.process_tiled(
@@ -365,7 +365,7 @@ class TestProcessTiled:
     ) -> None:
         calls: list[dict[str, object]] = []
 
-        def fake_solve(**kwargs: object) -> _SolveResult:
+        def fake_solve(**kwargs: object) -> SolveResult:
             data = kwargs["data"]
             mu1 = kwargs.get("mu1")
             mu2 = kwargs.get("mu2")
@@ -379,9 +379,9 @@ class TestProcessTiled:
                     "mu2": mu2.detach().cpu().clone(),
                 }
             )
-            return _SolveResult(clean=data.cpu(), iterations=1)
+            return SolveResult(clean=data.cpu(), iterations=1)
 
-        monkeypatch.setattr(remover, "_solve", fake_solve)
+        monkeypatch.setattr(remover, "_run_solver", fake_solve)
 
         tile_mus = [
             (1 / 6, 1 / 300),

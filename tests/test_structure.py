@@ -67,19 +67,24 @@ def test_ops_module_keeps_automatic_flow_direct_and_docstring_concise() -> None:
     assert "Returns:\n        Destriped image with the same shape and dtype." in source
 
 
-def test_core_is_package_with_remover_and_operators() -> None:
+def test_core_separates_remover_solver_and_operators() -> None:
     root = Path(__file__).resolve().parents[1] / "src" / "destripe"
     core_root = root / "core"
     remover_source = (core_root / "remover.py").read_text(encoding="utf-8")
+    solver_source = (core_root / "solver.py").read_text(encoding="utf-8")
     operator_source = (core_root / "operators.py").read_text(encoding="utf-8")
 
     assert core_root.is_dir()
     assert (core_root / "__init__.py").exists()
     assert (core_root / "remover.py").exists()
+    assert (core_root / "solver.py").exists()
     assert (core_root / "operators.py").exists()
     assert not (core_root / "result.py").exists()
     assert not (root / "core.py").exists()
     assert "class UniversalStripeRemover" in remover_source
+    assert "from .solver import SolveResult, solve_pdhg" in remover_source
+    assert "class SolveResult" in solver_source
+    assert "def solve_pdhg(" in solver_source
     assert "StripeResult" not in remover_source
     assert "process_tiled_components" not in remover_source
     assert "keep_components" not in remover_source
@@ -96,17 +101,20 @@ def test_core_is_package_with_remover_and_operators() -> None:
     assert "def _forward_diff(" not in remover_source
     assert "def _dir_diff(" not in remover_source
     assert "def _adjoint_" not in remover_source
+    assert "adjoint_grad" not in remover_source
+    assert "from .operators import" in solver_source
     assert "def _process_single_tile(" not in remover_source
     assert "original_mu1" not in remover_source
     assert "original_mu2" not in remover_source
     assert "validated_tile_mus" not in remover_source
     assert "l2_dual" not in remover_source
-    assert "sparse_dual" in remover_source
+    assert "sparse_dual" not in remover_source
+    assert "sparse_dual" in solver_source
     assert "On CUDA" not in remover_source
     assert "def _make_tile_mu_tensors(" in remover_source
-    assert "def _make_solver_mu_tensor(" in remover_source
+    assert "def _make_mu_tensor(" in solver_source
     assert "def _convert_to_tensor(" in remover_source
-    assert "def _make_zero_pair(" in remover_source
+    assert "def _make_zero_pair(" in solver_source
     assert "def _make_cosine_window(" in remover_source
     assert "def _tile_mu_tensors(" not in remover_source
     assert "def _solver_mu_tensor(" not in remover_source

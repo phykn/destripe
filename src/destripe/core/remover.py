@@ -1,22 +1,15 @@
 import math
 import numbers
 from collections.abc import Sequence
-from dataclasses import dataclass
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 
-from .operators import adjoint_dir, adjoint_grad, dir_diff, forward_diff
+from .solver import SolveResult, solve_pdhg
 
 
 DIRECTION_MODES = (0, 1, 2, 3, 4)
-
-
-@dataclass(frozen=True)
-class _SolveResult:
-    clean: torch.Tensor
-    iterations: int
 
 
 class UniversalStripeRemover:
@@ -70,7 +63,7 @@ class UniversalStripeRemover:
         iterations: int,
         proj: bool,
         verbose: bool = False,
-    ) -> _SolveResult:
+    ) -> SolveResult:
         self._validate_solver_params(iterations=iterations)
 
         input_tensor = self._convert_to_tensor(x=image)
@@ -79,20 +72,20 @@ class UniversalStripeRemover:
         if input_tensor.dim() not in {2, 3}:
             raise ValueError("image must have shape (H, W) or (N, H, W).")
         if min(input_tensor.shape[-2:]) < 2:
-            return _SolveResult(clean=input_tensor.clone(), iterations=0)
+            return SolveResult(clean=input_tensor.clone(), iterations=0)
 
         squeeze_batch = input_tensor.dim() == 2
         if squeeze_batch:
             input_tensor = input_tensor.unsqueeze(0)
 
-        result = self._solve(
+        result = self._run_solver(
             data=input_tensor,
             iterations=iterations,
             proj=proj,
             verbose=verbose,
         )
         clean = result.clean.squeeze(0) if squeeze_batch else result.clean
-        return _SolveResult(clean=clean, iterations=result.iterations)
+        return SolveResult(clean=clean, iterations=result.iterations)
 
     def process_tiled(
         self,
@@ -152,7 +145,7 @@ class UniversalStripeRemover:
                 )
 
             tile_mu1, tile_mu2 = tile_mu_values[0]
-            return self._solve(
+            return self._run_solver(
                 data=image_2d.unsqueeze(0),
                 iterations=iterations,
                 proj=proj,
@@ -220,7 +213,7 @@ class UniversalStripeRemover:
                 tile_mus=tile_mu_values,
                 ref=tile_tensor,
             )
-            cleaned_tiles = self._solve(
+            cleaned_tiles = self._run_solver(
                 data=tile_tensor,
                 iterations=iterations,
                 proj=proj,
@@ -305,7 +298,7 @@ class UniversalStripeRemover:
             validated.append((mu1_float, mu2_float))
         return validated
 
-    def _solve(
+    def _run_solver(
         self,
         data: torch.Tensor,
         iterations: int,
@@ -313,163 +306,19 @@ class UniversalStripeRemover:
         verbose: bool,
         mu1: torch.Tensor | float | None = None,
         mu2: torch.Tensor | float | None = None,
-    ) -> _SolveResult:
-        if data.is_floating_point():
-            data = data.to(device=self.device)
-        else:
-            data = data.to(device=self.device, dtype=torch.float32)
-
-        # Dual variables are sigma-scaled, so primal updates fold in tau*sigma.
-        step_size = self.tau * self.sigma
-        mu1_tensor = self._make_solver_mu_tensor(
-            value=mu1,
-            fallback=self.mu1,
-            ref=data,
+    ) -> SolveResult:
+        return solve_pdhg(
+            data=data,
+            directions=self.directions,
+            mu1=self.mu1 if mu1 is None else mu1,
+            mu2=self.mu2 if mu2 is None else mu2,
+            device=self.device,
+            tau=self.tau,
+            sigma=self.sigma,
+            iterations=iterations,
+            proj=proj,
+            verbose=verbose,
         )
-        mu2_tensor = self._make_solver_mu_tensor(
-            value=mu2,
-            fallback=self.mu2,
-            ref=data,
-        )
-        tv_dual_radius = mu1_tensor / self.sigma
-        dir_dual_clip = 1.0 / self.sigma
-        sparse_dual_clip = mu2_tensor / self.sigma
-        eps = 1e-9
-
-        num_stripes = len(self.directions)
-        num_vars = 1 + num_stripes
-
-        clean = data.clone()
-        stripe_components = [torch.zeros_like(input=data) for _ in self.directions]
-
-        grad_row, grad_row_bar = self._make_zero_pair(ref=data)
-        grad_col, grad_col_bar = self._make_zero_pair(ref=data)
-
-        dir_dual = [torch.zeros_like(input=data) for _ in self.directions]
-        dir_dual_bar = [torch.zeros_like(input=data) for _ in self.directions]
-        sparse_dual = [torch.zeros_like(input=data) for _ in self.directions]
-        sparse_dual_bar = [torch.zeros_like(input=data) for _ in self.directions]
-
-        scratch = torch.empty_like(input=data)
-        directional_diff = torch.empty_like(input=data)
-        grad_norm = torch.empty_like(input=data)
-
-        executed_iterations = 0
-        with torch.no_grad():
-            for iteration_idx in range(iterations):
-                executed_iterations = iteration_idx + 1
-                if verbose:
-                    print(f"\rIteration: {iteration_idx + 1} / {iterations}", end="")
-
-                adjoint_grad(
-                    target=clean,
-                    p_h=grad_row_bar,
-                    p_v=grad_col_bar,
-                    scale=step_size,
-                )
-
-                for component_idx, mode in enumerate(self.directions):
-                    adjoint_dir(
-                        target=stripe_components[component_idx],
-                        q=dir_dual_bar[component_idx],
-                        mode=mode,
-                        scale=step_size,
-                    )
-                    stripe_components[component_idx].sub_(
-                        sparse_dual_bar[component_idx], alpha=step_size
-                    )
-
-                # Independent primal updates would drift off u + sum(s_i) = data.
-                scratch.copy_(data)
-                for stripe_component in stripe_components:
-                    scratch.sub_(stripe_component)
-                scratch.sub_(clean).div_(num_vars)
-                clean.add_(scratch)
-                for stripe_component in stripe_components:
-                    stripe_component.add_(scratch)
-
-                if proj:
-                    # Clamping clean would break equality unless stripes absorb the residual.
-                    torch.clamp(input=clean, max=0, out=scratch)
-                    scratch.add_((clean - 1).clamp_(min=0))
-                    scratch.div_(num_stripes)
-                    for stripe_component in stripe_components:
-                        stripe_component.add_(scratch)
-                    clean.clamp_(min=0, max=1)
-
-                grad_row_bar.copy_(grad_row)
-                grad_col_bar.copy_(grad_col)
-
-                forward_diff(x=clean, dim=1, out=scratch)
-                grad_row.add_(scratch)
-                forward_diff(x=clean, dim=2, out=scratch)
-                grad_col.add_(scratch)
-
-                torch.mul(grad_row, grad_row, out=grad_norm)
-                grad_norm.addcmul_(grad_col, grad_col)
-                grad_norm.sqrt_().clamp_(min=eps)
-                torch.div(tv_dual_radius, grad_norm, out=scratch)
-                scratch.clamp_(max=1.0)
-                grad_row.mul_(scratch)
-                grad_col.mul_(scratch)
-
-                grad_row_bar.mul_(-1).add_(grad_row, alpha=2)
-                grad_col_bar.mul_(-1).add_(grad_col, alpha=2)
-
-                for component_idx, mode in enumerate(self.directions):
-                    dir_dual_bar[component_idx].copy_(dir_dual[component_idx])
-                    dir_diff(
-                        x=stripe_components[component_idx],
-                        mode=mode,
-                        out=directional_diff,
-                    )
-                    dir_dual[component_idx].add_(directional_diff).clamp_(
-                        min=-dir_dual_clip,
-                        max=dir_dual_clip,
-                    )
-                    dir_dual_bar[component_idx].mul_(-1).add_(
-                        dir_dual[component_idx], alpha=2
-                    )
-
-                    sparse_dual_bar[component_idx].copy_(sparse_dual[component_idx])
-                    sparse_dual[component_idx].add_(stripe_components[component_idx])
-                    torch.maximum(
-                        sparse_dual[component_idx],
-                        -sparse_dual_clip,
-                        out=sparse_dual[component_idx],
-                    )
-                    torch.minimum(
-                        sparse_dual[component_idx],
-                        sparse_dual_clip,
-                        out=sparse_dual[component_idx],
-                    )
-                    sparse_dual_bar[component_idx].mul_(-1).add_(
-                        sparse_dual[component_idx], alpha=2
-                    )
-
-        if verbose:
-            print("")
-
-        return _SolveResult(clean=clean.cpu(), iterations=executed_iterations)
-
-    @staticmethod
-    def _make_solver_mu_tensor(
-        *,
-        value: torch.Tensor | float | None,
-        fallback: float,
-        ref: torch.Tensor,
-    ) -> torch.Tensor:
-        if value is None:
-            return torch.as_tensor(fallback, dtype=ref.dtype, device=ref.device)
-
-        out = torch.as_tensor(value, dtype=ref.dtype, device=ref.device)
-        if out.dim() == 0:
-            return out
-        if out.dim() == 1 and out.numel() == ref.shape[0]:
-            return out.reshape(-1, 1, 1)
-        if out.shape == (ref.shape[0], 1, 1):
-            return out
-        raise ValueError("mu tensor must be scalar or match the batch size.")
 
     @staticmethod
     def _validate_solver_params(iterations: int) -> None:
@@ -548,13 +397,6 @@ class UniversalStripeRemover:
         if x.is_floating_point():
             return x
         return x.to(dtype=torch.float32)
-
-    @staticmethod
-    def _make_zero_pair(
-        ref: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        z = torch.zeros_like(input=ref)
-        return z, z.clone()
 
     @staticmethod
     def _pad_reflect(
