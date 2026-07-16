@@ -1,8 +1,9 @@
 from dataclasses import dataclass
 
 import numpy as np
+import torch
 
-from .constants import ALL_DIRECTIONS, MU1_DENOMINATORS
+from .constants import ALL_DIRECTIONS, EPS, MU1_DENOMINATORS
 from .directions import (
     make_score_weights,
     make_selection_weights,
@@ -11,6 +12,7 @@ from .directions import (
 )
 from .preprocess import extract_high_pass, make_analysis_tensor
 from .strength import estimate_strength
+from .stripe import MIN_PROFILE_REPETITION, measure_repetition
 
 
 @dataclass(frozen=True)
@@ -37,7 +39,12 @@ def estimate_adaptive_params(
     supported = tuple(scores)
     score_weights = make_score_weights(scores)
     selection_weights = make_selection_weights(scores)
-    selected = select_directions(selection_weights) if fixed is None else fixed
+    selected = (
+        _select_repeated_directions(high_pass, selection_weights)
+        if fixed is None
+        else fixed
+    )
+    stripe_weights = _restrict_weights(selection_weights, selected)
     mu1 = 1 / MU1_DENOMINATORS[2]
     mu2, confidence, stripe_evidence, profile_repetition = estimate_strength(
         high_pass=high_pass,
@@ -45,6 +52,7 @@ def estimate_adaptive_params(
         supported_directions=supported,
         score_weights=score_weights,
         selection_weights=selection_weights,
+        stripe_weights=stripe_weights,
     )
     return AdaptiveParams(
         directions=tuple(selected),
@@ -54,6 +62,35 @@ def estimate_adaptive_params(
         stripe_evidence=stripe_evidence,
         profile_repetition=profile_repetition,
     )
+
+
+def _select_repeated_directions(
+    high_pass: torch.Tensor,
+    selection_weights: np.ndarray,
+) -> tuple[int, ...]:
+    selected = select_directions(selection_weights)
+    return tuple(
+        mode
+        for mode in selected
+        if measure_repetition(high_pass, mode) >= MIN_PROFILE_REPETITION
+    )
+
+
+def _restrict_weights(
+    weights: np.ndarray,
+    directions: tuple[int, ...],
+) -> np.ndarray:
+    restricted = np.zeros_like(weights)
+    if not directions:
+        return restricted
+
+    indices = list(directions)
+    total = float(weights[indices].sum())
+    if total > EPS:
+        restricted[indices] = weights[indices] / total
+    else:
+        restricted[indices] = 1.0 / len(indices)
+    return restricted
 
 
 def _validate_fixed_modes(requested: object) -> tuple[int, ...]:

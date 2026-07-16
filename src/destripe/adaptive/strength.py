@@ -28,6 +28,7 @@ def estimate_strength(
     supported_directions: tuple[int, ...],
     score_weights: np.ndarray,
     selection_weights: np.ndarray,
+    stripe_weights: np.ndarray,
 ) -> tuple[float, float, float, float]:
     supported_indices = list(supported_directions)
     supported_scores = score_weights[supported_indices]
@@ -45,23 +46,20 @@ def estimate_strength(
     )
     stripe_coherence = _measure_stripe(
         stripe_stats=stripe_stats,
-        selection_weights=selection_weights,
+        selection_weights=stripe_weights,
     )
     confidence = math.sqrt(direction_confidence * stripe_coherence)
     stripe_amplitude = _measure_stripe_amplitude(
         stripe_stats=stripe_stats,
-        selection_weights=selection_weights,
+        selection_weights=stripe_weights,
     )
     high_pass_amplitude = float(high_pass.abs().mean().item())
     relative_amplitude = stripe_amplitude / (high_pass_amplitude + EPS)
-    repetition = _measure_primary_repetition(
-        stripe_stats=stripe_stats,
-        selection_weights=selection_weights,
-    )
+    repetition = _measure_minimum_repetition(stripe_stats)
 
     mu2 = _estimate_mu2(
         stripe_stats=stripe_stats,
-        selection_weights=selection_weights,
+        selection_weights=stripe_weights,
     )
     return mu2, confidence, confidence * relative_amplitude, repetition
 
@@ -178,6 +176,8 @@ def _estimate_sigma(values: np.ndarray) -> float:
 
 
 def _measure_concentration(weights: np.ndarray) -> float:
+    if len(weights) <= 1:
+        return 1.0
     uniform_power = 1.0 / len(weights)
     power = float(np.sum(weights * weights))
     return min(1.0, max(0.0, (power - uniform_power) / (1.0 - uniform_power)))
@@ -228,18 +228,10 @@ def _measure_stripe_amplitude(
     return float(np.mean(amplitudes))
 
 
-def _measure_primary_repetition(
-    *,
-    stripe_stats: list[_StripeStats],
-    selection_weights: np.ndarray,
-) -> float:
+def _measure_minimum_repetition(stripe_stats: list[_StripeStats]) -> float:
     if not stripe_stats:
         return 0.0
-    primary = max(
-        stripe_stats,
-        key=lambda stats: (selection_weights[stats.mode], -stats.mode),
-    )
-    return primary.repetition
+    return min(stats.repetition for stats in stripe_stats)
 
 
 def _average_weighted(

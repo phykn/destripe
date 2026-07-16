@@ -5,6 +5,7 @@ import numpy as np
 
 from .adaptive import estimate_adaptive_params, estimate_tile_mus
 from .adaptive.refine import refine_clean
+from .adaptive.stripe import MIN_PROFILE_REPETITION
 from .core import UniversalStripeRemover
 
 
@@ -14,7 +15,6 @@ AUTOMATIC_OVERLAP = 64
 AUTOMATIC_MIN_TILE_SIDE = 3
 AUTOMATIC_MIN_CONFIDENCE = 0.1
 AUTOMATIC_MIN_STRIPE_EVIDENCE = 0.02
-AUTOMATIC_MIN_PROFILE_REPETITION = 1.0
 
 
 @dataclass(frozen=True)
@@ -42,9 +42,10 @@ def automatic_clean(gray: np.ndarray, *, proj: bool) -> AutomaticResult:
     started = time.perf_counter()
     params = estimate_adaptive_params(values)
     if (
-        params.confidence < AUTOMATIC_MIN_CONFIDENCE
+        not params.directions
+        or params.confidence < AUTOMATIC_MIN_CONFIDENCE
         or params.stripe_evidence < AUTOMATIC_MIN_STRIPE_EVIDENCE
-        or params.profile_repetition < AUTOMATIC_MIN_PROFILE_REPETITION
+        or params.profile_repetition < MIN_PROFILE_REPETITION
     ):
         return AutomaticResult(
             clean=np.clip(values, 0.0, 1.0) if proj else values.copy(),
