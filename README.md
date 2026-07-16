@@ -25,6 +25,8 @@ native-resolution detection of very narrow stripes is required.
 
 The automatic path estimates supported stripe directions and `mu2` from the
 image, then runs the multi-direction PDHG solver with local 2-by-2 tile weights.
+If multiple directions coincide with a sparse scene structure, it conservatively
+leaves the input unchanged to avoid subtracting overlapping structure projections.
 When repeated directional evidence is too weak relative to the image high-pass
 energy, it returns the input unchanged
 instead of forcing a stripe direction. It finishes detected stripes with a small

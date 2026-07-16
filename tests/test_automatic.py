@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 import pytest
 
-from destripe.adaptive import estimate_adaptive_params
+from destripe.adaptive import AdaptiveParams, estimate_adaptive_params
 from destripe.adaptive.constants import PARALLEL_OFFSETS
 from destripe.adaptive.directions import (
     make_selection_weights,
@@ -404,6 +404,29 @@ def test_nonrepeated_secondary_direction_is_not_sent_to_solver() -> None:
     assert result.directions == (0,)
     result_rms = float(np.sqrt(np.mean((result.clean - target) ** 2)))
     assert result_rms < 0.01
+
+
+def test_automatic_preserves_sparse_structure_with_multiple_directions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image = _make_full_height_bars()
+    params = AdaptiveParams(
+        directions=(0, 2),
+        mu1=0.25,
+        mu2=1 / 300,
+        confidence=1.0,
+        stripe_evidence=1.0,
+        profile_repetition=1.0,
+    )
+    monkeypatch.setattr(
+        "destripe.automatic.estimate_adaptive_params",
+        lambda _: params,
+    )
+
+    result = automatic_clean(image, proj=True)
+
+    assert result.directions == ()
+    np.testing.assert_array_equal(result.clean, image)
 
 
 def test_fixed_directions_are_not_refiltered_by_local_repetition() -> None:
