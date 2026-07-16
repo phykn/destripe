@@ -11,6 +11,9 @@ from .core import UniversalStripeRemover
 AUTOMATIC_ITERATIONS = 1000
 AUTOMATIC_TILES = 2
 AUTOMATIC_OVERLAP = 64
+AUTOMATIC_MIN_TILE_SIDE = 3
+AUTOMATIC_MIN_CONFIDENCE = 0.1
+AUTOMATIC_MIN_STRIPE_EVIDENCE = 0.001
 
 
 @dataclass(frozen=True)
@@ -37,10 +40,28 @@ def automatic_clean(gray: np.ndarray, *, proj: bool) -> AutomaticResult:
 
     started = time.perf_counter()
     params = estimate_adaptive_params(values)
-    tile_mus = estimate_tile_mus(
-        values,
-        tiles=AUTOMATIC_TILES,
-        directions=params.directions,
+    if (
+        params.confidence < AUTOMATIC_MIN_CONFIDENCE
+        or params.stripe_evidence < AUTOMATIC_MIN_STRIPE_EVIDENCE
+    ):
+        return AutomaticResult(
+            clean=np.clip(values, 0.0, 1.0) if proj else values.copy(),
+            directions=(),
+            mu1=params.mu1,
+            mu2=params.mu2,
+            confidence=params.confidence,
+            elapsed_seconds=time.perf_counter() - started,
+        )
+
+    tiles = _select_tile_count(values.shape)
+    tile_mus = (
+        estimate_tile_mus(
+            values,
+            tiles=tiles,
+            directions=params.directions,
+        )
+        if tiles > 1
+        else None
     )
     remover = UniversalStripeRemover(
         mu1=params.mu1,
@@ -49,7 +70,7 @@ def automatic_clean(gray: np.ndarray, *, proj: bool) -> AutomaticResult:
     )
     solver_clean = remover.process_tiled(
         np.asarray(values, dtype=np.float32),
-        tiles=AUTOMATIC_TILES,
+        tiles=tiles,
         iterations=AUTOMATIC_ITERATIONS,
         overlap=AUTOMATIC_OVERLAP,
         proj=proj,
@@ -69,6 +90,13 @@ def automatic_clean(gray: np.ndarray, *, proj: bool) -> AutomaticResult:
         confidence=params.confidence,
         elapsed_seconds=time.perf_counter() - started,
     )
+
+
+def _select_tile_count(shape: tuple[int, int]) -> int:
+    core_shape = tuple((dim + AUTOMATIC_TILES - 1) // AUTOMATIC_TILES for dim in shape)
+    if min(core_shape) < AUTOMATIC_MIN_TILE_SIDE:
+        return 1
+    return AUTOMATIC_TILES
 
 
 def _validate_gray(gray: np.ndarray) -> np.ndarray:

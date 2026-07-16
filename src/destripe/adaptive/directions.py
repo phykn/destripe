@@ -6,20 +6,25 @@ from .stripe import measure_shrinkage
 
 
 def score_directions(high_pass: torch.Tensor) -> dict[int, float]:
-    return {mode: _score_direction(high_pass, mode=mode) for mode in ALL_DIRECTIONS}
+    return {
+        mode: _score_direction(high_pass, mode=mode)
+        for mode in supported_directions(high_pass.shape)
+    }
 
 
 def make_score_weights(scores: dict[int, float]) -> np.ndarray:
-    return _sparsemax(_make_score_array(scores))
+    modes, values = _make_score_values(scores)
+    return _expand_weights(modes, _sparsemax(values))
 
 
 def make_selection_weights(scores: dict[int, float]) -> np.ndarray:
-    values = _make_score_array(scores)
+    modes, values = _make_score_values(scores)
     if float(values.max() - values.min()) <= EPS:
         weights = np.zeros_like(values)
         weights[int(np.argmax(values))] = 1.0
-        return weights
-    return _sparsemax(_standardize_scores(values))
+    else:
+        weights = _sparsemax(_standardize_scores(values))
+    return _expand_weights(modes, weights)
 
 
 def select_directions(weights: np.ndarray) -> tuple[int, ...]:
@@ -31,8 +36,40 @@ def select_directions(weights: np.ndarray) -> tuple[int, ...]:
     return tuple(sorted(selected_modes, key=lambda mode: (-weights[mode], mode)))
 
 
-def _make_score_array(scores: dict[int, float]) -> np.ndarray:
-    return np.array([scores[mode] for mode in ALL_DIRECTIONS], dtype=np.float64)
+def supported_directions(
+    shape: torch.Size | tuple[int, int],
+) -> tuple[int, ...]:
+    height, width = shape
+    return tuple(
+        mode
+        for mode in ALL_DIRECTIONS
+        if _offset_fits(height, width, PARALLEL_OFFSETS[mode])
+        and _offset_fits(height, width, CROSS_OFFSETS[mode])
+    )
+
+
+def _make_score_values(
+    scores: dict[int, float],
+) -> tuple[tuple[int, ...], np.ndarray]:
+    modes = tuple(mode for mode in ALL_DIRECTIONS if mode in scores)
+    if not modes:
+        raise ValueError("scores must contain at least one supported direction.")
+    return modes, np.array([scores[mode] for mode in modes], dtype=np.float64)
+
+
+def _expand_weights(modes: tuple[int, ...], values: np.ndarray) -> np.ndarray:
+    weights = np.zeros(len(ALL_DIRECTIONS), dtype=np.float64)
+    weights[list(modes)] = values
+    return weights
+
+
+def _offset_fits(
+    height: int,
+    width: int,
+    offset: tuple[int, int],
+) -> bool:
+    row_step, col_step = offset
+    return height > abs(row_step) and width > abs(col_step)
 
 
 def _offset_diff(t: torch.Tensor, row_step: int, col_step: int) -> torch.Tensor:

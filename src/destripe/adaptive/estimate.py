@@ -19,6 +19,7 @@ class AdaptiveParams:
     mu1: float
     mu2: float
     confidence: float
+    stripe_evidence: float
 
 
 def estimate_adaptive_params(
@@ -32,13 +33,15 @@ def estimate_adaptive_params(
     analysis = make_analysis_tensor(gray)
     high_pass = extract_high_pass(analysis)
     scores = score_directions(high_pass)
+    supported = tuple(scores)
     score_weights = make_score_weights(scores)
     selection_weights = make_selection_weights(scores)
     selected = select_directions(selection_weights) if fixed is None else fixed
     mu1 = 1 / MU1_DENOMINATORS[2]
-    mu2, confidence = estimate_strength(
+    mu2, confidence, stripe_evidence = estimate_strength(
         high_pass=high_pass,
         selected_directions=tuple(selected),
+        supported_directions=supported,
         score_weights=score_weights,
         selection_weights=selection_weights,
     )
@@ -47,6 +50,7 @@ def estimate_adaptive_params(
         mu1=mu1,
         mu2=mu2,
         confidence=confidence,
+        stripe_evidence=stripe_evidence,
     )
 
 

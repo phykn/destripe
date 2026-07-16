@@ -133,6 +133,10 @@ class UniversalStripeRemover:
 
         orig_h, orig_w = image_2d.shape
         if min(orig_h, orig_w) < 2:
+            if tile_mu_values is not None:
+                raise ValueError(
+                    "tile_mus cannot be applied to tiles smaller than 2x2."
+                )
             return image_2d.clone()
 
         if tiles <= 1:
@@ -160,6 +164,10 @@ class UniversalStripeRemover:
         padded_w = orig_w + pad_right
         core_h, core_w = padded_h // tiles, padded_w // tiles
         if core_h < 2 or core_w < 2:
+            if tile_mu_values is not None:
+                raise ValueError(
+                    "tile_mus cannot be applied to tiles smaller than 2x2."
+                )
             return self.process(
                 image=image_2d,
                 iterations=iterations,
@@ -394,6 +402,8 @@ class UniversalStripeRemover:
     ) -> torch.Tensor:
         if not isinstance(x, torch.Tensor):
             x = torch.as_tensor(data=x)
+        if x.is_complex():
+            raise ValueError("image must contain real values.")
         if x.is_floating_point():
             return x
         return x.to(dtype=torch.float32)

@@ -4,7 +4,9 @@ import cv2
 import numpy as np
 import pytest
 
-from destripe.automatic import automatic_clean
+from destripe.adaptive.directions import score_directions, supported_directions
+from destripe.adaptive.preprocess import extract_high_pass, make_analysis_tensor
+from destripe.automatic import _select_tile_count, automatic_clean
 from destripe.preprocess import prepare_solver_gray
 
 
@@ -38,6 +40,37 @@ def test_automatic_noops_constant_and_tiny_images() -> None:
         result = automatic_clean(gray, proj=False)
         np.testing.assert_array_equal(result.clean, gray)
         assert result.directions == ()
+
+
+def test_automatic_noops_without_coherent_stripe_evidence() -> None:
+    rows, cols = np.indices((48, 64))
+    images = (
+        0.2 + 0.6 * np.exp(-((rows - 23.5) ** 2 + (cols - 31.5) ** 2) / 220),
+        0.2 + 0.6 * (rows / 47 + cols / 63) / 2,
+        np.clip(
+            0.5 + np.random.default_rng(7).normal(0, 0.08, (48, 64)),
+            0.0,
+            1.0,
+        ),
+    )
+
+    for image in images:
+        result = automatic_clean(image, proj=True)
+
+        assert result.directions == ()
+        np.testing.assert_array_equal(result.clean, image)
+
+
+def test_thin_analysis_uses_only_supported_directions_and_one_tile() -> None:
+    image = np.linspace(0.0, 1.0, 2 * 2048).reshape(2, 2048)
+
+    analysis = make_analysis_tensor(image)
+    scores = score_directions(extract_high_pass(analysis))
+
+    assert analysis.shape == image.shape
+    assert supported_directions(analysis.shape) == (0, 2, 4)
+    assert tuple(scores) == (0, 2, 4)
+    assert _select_tile_count(image.shape) == 1
 
 
 def test_automatic_restores_preferred_sample_configuration() -> None:

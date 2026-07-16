@@ -24,12 +24,16 @@ def estimate_strength(
     *,
     high_pass: torch.Tensor,
     selected_directions: tuple[int, ...],
+    supported_directions: tuple[int, ...],
     score_weights: np.ndarray,
     selection_weights: np.ndarray,
-) -> tuple[float, float]:
-    score_strength = _measure_concentration(score_weights)
-    selection_strength = _measure_concentration(selection_weights)
-    ambiguity = _measure_entropy(score_weights)
+) -> tuple[float, float, float]:
+    supported_indices = list(supported_directions)
+    supported_scores = score_weights[supported_indices]
+    supported_selection = selection_weights[supported_indices]
+    score_strength = _measure_concentration(supported_scores)
+    selection_strength = _measure_concentration(supported_selection)
+    ambiguity = _measure_entropy(supported_scores)
     direction_confidence = math.sqrt(score_strength * selection_strength) * (
         1 - ambiguity
     )
@@ -43,12 +47,16 @@ def estimate_strength(
         selection_weights=selection_weights,
     )
     confidence = math.sqrt(direction_confidence * stripe_coherence)
+    stripe_amplitude = _measure_stripe_amplitude(
+        stripe_stats=stripe_stats,
+        selection_weights=selection_weights,
+    )
 
     mu2 = _estimate_mu2(
         stripe_stats=stripe_stats,
         selection_weights=selection_weights,
     )
-    return mu2, confidence
+    return mu2, confidence, confidence * stripe_amplitude
 
 
 def _make_stripe_stats(
@@ -193,6 +201,23 @@ def _measure_stripe(
     if total_weight > EPS:
         return _average_weighted(coherences, weight_array, total_weight)
     return float(np.mean(coherences))
+
+
+def _measure_stripe_amplitude(
+    *,
+    stripe_stats: list[_StripeStats],
+    selection_weights: np.ndarray,
+) -> float:
+    amplitudes = [float(np.mean(stats.abs_values)) for stats in stripe_stats]
+    weights = [float(selection_weights[stats.mode]) for stats in stripe_stats]
+    if not amplitudes:
+        return 0.0
+
+    weight_array = np.array(weights, dtype=np.float64)
+    total_weight = float(weight_array.sum())
+    if total_weight > EPS:
+        return _average_weighted(amplitudes, weight_array, total_weight)
+    return float(np.mean(amplitudes))
 
 
 def _average_weighted(

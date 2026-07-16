@@ -13,7 +13,9 @@ def make_analysis_tensor(gray: np.ndarray) -> torch.Tensor:
     if max_side <= 512:
         return tensor
     scale = 512 / max_side
-    size = (max(8, round(height * scale)), max(8, round(width * scale)))
+    size = (max(1, round(height * scale)), max(1, round(width * scale)))
+    if min(size) < 2:
+        return tensor
     return (
         F.interpolate(
             tensor.unsqueeze(0).unsqueeze(0),

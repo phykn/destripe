@@ -194,6 +194,21 @@ class TestProcess:
         with pytest.raises(ValueError, match="NaN or Inf"):
             remover.process(image=img)
 
+    @pytest.mark.parametrize(
+        "image",
+        [
+            np.ones((8, 8), dtype=np.complex64),
+            torch.ones(8, 8, dtype=torch.complex64),
+        ],
+    )
+    def test_complex_input_is_rejected(
+        self,
+        remover: UniversalStripeRemover,
+        image: np.ndarray | torch.Tensor,
+    ) -> None:
+        with pytest.raises(ValueError, match="real values"):
+            remover.process(image=image)
+
     def test_constant_image(self, remover: UniversalStripeRemover) -> None:
         img = torch.full((32, 32), 0.5)
         result = remover.process(image=img, iterations=20)
@@ -332,6 +347,21 @@ class TestProcessTiled:
                 iterations=1,
                 overlap=0,
                 tile_mus=tile_mus,  # type: ignore[arg-type]
+            )
+
+    @pytest.mark.parametrize("shape", [(1, 8), (3, 8)])
+    def test_valid_tile_mus_raise_when_tiles_cannot_be_applied(
+        self,
+        remover: UniversalStripeRemover,
+        shape: tuple[int, int],
+    ) -> None:
+        with pytest.raises(ValueError, match="cannot be applied"):
+            remover.process_tiled(
+                image=torch.rand(shape),
+                tiles=4,
+                iterations=1,
+                overlap=0,
+                tile_mus=[(1 / 6, 1 / 300)] * 16,
             )
 
     def test_tile_mus_restore_after_tile_processing_error(
