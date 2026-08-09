@@ -3,6 +3,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 import pytest
+import torch
 
 from destripe.adaptive import AdaptiveParams, estimate_adaptive_params
 from destripe.adaptive.constants import PARALLEL_OFFSETS
@@ -12,14 +13,15 @@ from destripe.adaptive.directions import (
     select_directions,
     supported_directions,
 )
-from destripe.adaptive.preprocess import extract_high_pass, make_analysis_tensor
+from destripe.adaptive.analysis import extract_high_pass, make_analysis_tensor
+from destripe.adaptive.profiles import make_profile, project
 from destripe.adaptive.strength import _measure_concentration
 from destripe.automatic import (
     AUTOMATIC_MIN_STRIPE_EVIDENCE,
     _select_tile_count,
+    _working_result_is_safe,
     automatic_clean,
 )
-from destripe.preprocess import prepare_solver_gray
 
 
 ASSET_DIR = Path(__file__).resolve().parents[1] / "asset"
@@ -55,6 +57,12 @@ def _make_directional_stripe(
     line_ids = col_step * rows - row_step * cols
     phase = (line_ids - line_ids.min()) / (line_ids.max() - line_ids.min() + 1)
     return 0.5 + amplitude * np.sin(2 * np.pi * cycles * phase)
+
+
+def _stripe_profile_rms(image: np.ndarray, mode: int) -> float:
+    high_pass = extract_high_pass(make_analysis_tensor(image))
+    stripe = project(high_pass, mode)
+    return float(stripe.square().mean().sqrt().item())
 
 
 def test_automatic_rejects_nonnumeric_gray() -> None:
@@ -460,6 +468,110 @@ def test_small_images_use_full_frame_solver() -> None:
     assert _select_tile_count((256, 256)) == 2
 
 
+def test_working_size_keeps_native_analysis_and_bounds_solver(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    analysis_shapes: list[tuple[int, int]] = []
+    calls: dict[str, object] = {}
+    params = AdaptiveParams(
+        directions=(0,),
+        mu1=0.25,
+        mu2=1 / 90,
+        confidence=1.0,
+        stripe_evidence=1.0,
+        profile_repetition=1.0,
+    )
+
+    def fake_estimate(values: np.ndarray) -> AdaptiveParams:
+        analysis_shapes.append(values.shape)
+        return params
+
+    class FakeRemover:
+        def __init__(self, **kwargs: object) -> None:
+            calls["device"] = kwargs["device"]
+
+        def process_tiled(self, image: np.ndarray, **_: object) -> object:
+            calls["solver_shape"] = image.shape
+            values = np.asarray(image)
+
+            class Result:
+                def numpy(self) -> np.ndarray:
+                    return values
+
+            return Result()
+
+    monkeypatch.setattr("destripe.automatic.estimate_adaptive_params", fake_estimate)
+    monkeypatch.setattr(
+        "destripe.automatic._prepare_solver_input",
+        lambda values, **_: (values, np.zeros_like(values)),
+    )
+    monkeypatch.setattr("destripe.automatic.UniversalStripeRemover", FakeRemover)
+    monkeypatch.setattr(
+        "destripe.automatic.refine_clean",
+        lambda **kwargs: np.asarray(kwargs["clean"]),
+    )
+    monkeypatch.setattr(
+        "destripe.automatic._working_result_is_safe",
+        lambda **_: True,
+    )
+
+    image = np.random.default_rng(41).random((128, 256))
+    result = automatic_clean(image, process_size=128, proj=True)
+
+    assert analysis_shapes == [(128, 256), (64, 128)]
+    assert calls == {"device": "cpu", "solver_shape": (64, 128)}
+    assert result.clean.shape == image.shape
+
+
+def test_working_size_falls_back_when_downsampling_loses_stripe_direction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("destripe.automatic.AUTOMATIC_ITERATIONS", 300)
+    target = np.full((128, 256), 0.5)
+    stripe = 0.04 * np.where(np.arange(256) % 2 == 0, -1.0, 1.0)[None, :]
+    observed = target + stripe
+
+    result = automatic_clean(observed, process_size=128, proj=True)
+
+    input_rms = float(np.sqrt(np.mean((observed - target) ** 2)))
+    result_rms = float(np.sqrt(np.mean((result.clean - target) ** 2)))
+    assert result.directions == (0,)
+    assert result_rms < input_rms * 0.75
+
+
+def test_resized_result_guard_compares_directional_amplitude() -> None:
+    cols = np.arange(256)[None, :]
+    stripe = 0.04 * np.sin(2 * np.pi * 8 * cols / 256)
+    source = np.full((64, 256), 0.5) + stripe
+    improved = np.full_like(source, 0.5) + 0.35 * stripe
+    amplified = np.full_like(source, 0.5) + 1.1 * stripe
+
+    assert _working_result_is_safe(source=source, clean=improved, directions=(0,))
+    assert not _working_result_is_safe(source=source, clean=amplified, directions=(0,))
+
+
+@pytest.mark.parametrize("mode", (1, 3))
+def test_single_row_profile_keeps_dense_indices(mode: int) -> None:
+    tensor = torch.linspace(0.0, 1.0, 17).reshape(1, 17)
+    profile, inverse = make_profile(tensor, mode)
+
+    assert profile.numel() == tensor.numel()
+    torch.testing.assert_close(profile[inverse].reshape_as(tensor), tensor)
+
+
+def test_working_size_falls_back_when_downsampling_aliases_stripe() -> None:
+    target = np.full((144, 288), 0.5)
+    stripe = 0.04 * np.sin(2 * np.pi * np.arange(288)[None, :] / 3)
+    observed = target + stripe
+
+    result = automatic_clean(observed, process_size=64, proj=True)
+
+    input_rms = float(np.sqrt(np.mean((observed - target) ** 2)))
+    result_rms = float(np.sqrt(np.mean((result.clean - target) ** 2)))
+    assert result.directions == (0,)
+    assert result_rms < input_rms * 0.25
+
+
 def test_small_diagonal_stripe_full_frame_quality(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -474,23 +586,32 @@ def test_small_diagonal_stripe_full_frame_quality(
     assert result_rms < 0.0045
 
 
-def test_automatic_restores_preferred_sample_configuration() -> None:
+def test_working_sizes_preserve_sample_detection_and_residual_quality() -> None:
     encoded = cv2.imread(str(ASSET_DIR / "sample.jpeg"), cv2.IMREAD_GRAYSCALE)
     assert encoded is not None
     values = encoded.astype(np.float64)
     normalized = (values - values.min()) / (values.max() - values.min())
-    processed = prepare_solver_gray(gray=normalized, process_size=512)
 
-    result = automatic_clean(processed, proj=True)
+    native = automatic_clean(normalized, proj=True)
+    native_residual = _stripe_profile_rms(native.clean, mode=0)
 
-    assert result.directions == (0,)
-    assert result.mu1 == 0.25
-    assert result.mu2 > 0.0
-    assert result.confidence > 0.0
-    assert result.clean.shape == processed.shape
-    assert np.isfinite(result.clean).all()
-    correction_rms = float(np.sqrt(np.mean((processed - result.clean) ** 2)))
-    assert correction_rms == pytest.approx(0.02971715, abs=1e-6)
+    for process_size in (256, 512):
+        result = automatic_clean(
+            normalized,
+            process_size=process_size,
+            proj=True,
+        )
+
+        assert result.directions == native.directions == (0,)
+        assert result.mu1 == native.mu1 == 0.25
+        assert result.mu2 == native.mu2
+        assert result.clean.shape == normalized.shape
+        assert np.isfinite(result.clean).all()
+        correction_rms = float(np.sqrt(np.mean((normalized - result.clean) ** 2)))
+        assert correction_rms > 0.01
+        assert _stripe_profile_rms(result.clean, mode=0) <= native_residual * 1.15
+        if process_size == 512:
+            np.testing.assert_array_equal(result.clean, native.clean)
 
 
 def test_automatic_is_deterministic() -> None:

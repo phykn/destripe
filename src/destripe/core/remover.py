@@ -85,7 +85,7 @@ class UniversalStripeRemover:
             proj=proj,
             verbose=verbose,
         )
-        clean = result.clean.squeeze(0) if squeeze_batch else result.clean
+        clean = (result.clean.squeeze(0) if squeeze_batch else result.clean).cpu()
         return SolveResult(clean=clean, iterations=result.iterations)
 
     def process_tiled(
@@ -150,14 +150,18 @@ class UniversalStripeRemover:
                 )
 
             tile_mu1, tile_mu2 = tile_mu_values[0]
-            return self._run_solver(
-                data=image_2d.unsqueeze(0),
-                iterations=iterations,
-                proj=proj,
-                verbose=verbose,
-                mu1=tile_mu1,
-                mu2=tile_mu2,
-            ).clean.squeeze(0)
+            return (
+                self._run_solver(
+                    data=image_2d.unsqueeze(0),
+                    iterations=iterations,
+                    proj=proj,
+                    verbose=verbose,
+                    mu1=tile_mu1,
+                    mu2=tile_mu2,
+                )
+                .clean.squeeze(0)
+                .cpu()
+            )
 
         pad_bottom = (tiles - orig_h % tiles) % tiles
         pad_right = (tiles - orig_w % tiles) % tiles
@@ -211,12 +215,12 @@ class UniversalStripeRemover:
             )
 
         if tile_mu_values is None:
-            cleaned_tiles = self.process(
-                image=tile_tensor,
+            cleaned_tiles = self._run_solver(
+                data=tile_tensor,
                 iterations=iterations,
                 proj=proj,
                 verbose=verbose,
-            )
+            ).clean
         else:
             tile_mu1, tile_mu2 = self._make_tile_mu_tensors(
                 tile_mus=tile_mu_values,
@@ -255,7 +259,7 @@ class UniversalStripeRemover:
         return blended_canvas[
             overlap_pixels : overlap_pixels + padded_h,
             overlap_pixels : overlap_pixels + padded_w,
-        ][:orig_h, :orig_w]
+        ][:orig_h, :orig_w].cpu()
 
     @staticmethod
     def _make_tile_mu_tensors(

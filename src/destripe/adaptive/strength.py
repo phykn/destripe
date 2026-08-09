@@ -9,7 +9,7 @@ from .constants import (
     MU2_DENOMINATORS,
     NORMAL_MAD_SCALE,
 )
-from .stripe import measure_repetition, measure_shrinkage, project
+from .profiles import measure_repetition, measure_shrinkage, project
 
 
 @dataclass(frozen=True)

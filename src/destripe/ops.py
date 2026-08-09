@@ -2,8 +2,6 @@ import numpy as np
 
 from .automatic import automatic_clean
 from .preprocess import (
-    prepare_solver_gray,
-    resize_to_shape,
     rgb_to_luma,
     validate_process_size,
 )
@@ -22,7 +20,7 @@ def destripe(
 
     Args:
         image: Input image.
-        process_size: Long-edge analysis size; None keeps original resolution.
+        process_size: Best-effort long-edge solver size; None solves natively.
         proj: Project output to the input intensity range.
 
     Returns:
@@ -71,14 +69,12 @@ def destripe(
     else:
         gray = normalized[..., 0]
 
-    processed_gray = prepare_solver_gray(
-        gray=gray,
+    automatic_result = automatic_clean(
+        gray,
         process_size=process_size_value,
+        proj=proj,
     )
-    automatic_result = automatic_clean(processed_gray, proj=proj)
-    correction = processed_gray - automatic_result.clean
-    if processed_gray.shape != gray.shape:
-        correction = resize_to_shape(correction, shape=gray.shape)
+    correction = gray - automatic_result.clean
     if not np.any(correction):
         return input_array.copy()
 

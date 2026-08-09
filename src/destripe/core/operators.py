@@ -22,15 +22,15 @@ def dir_diff(
 ) -> None:
     out.zero_()
     if mode == 0:
-        out[:, :-1, :] = x[:, 1:, :] - x[:, :-1, :]
+        torch.sub(x[:, 1:, :], x[:, :-1, :], out=out[:, :-1, :])
     elif mode == 1:
-        out[:, :-2, :-1] = x[:, 2:, 1:] - x[:, :-2, :-1]
+        torch.sub(x[:, 2:, 1:], x[:, :-2, :-1], out=out[:, :-2, :-1])
     elif mode == 2:
-        out[:, :-1, :-1] = x[:, 1:, 1:] - x[:, :-1, :-1]
+        torch.sub(x[:, 1:, 1:], x[:, :-1, :-1], out=out[:, :-1, :-1])
     elif mode == 3:
-        out[:, :-2, 1:] = x[:, 2:, :-1] - x[:, :-2, 1:]
+        torch.sub(x[:, 2:, :-1], x[:, :-2, 1:], out=out[:, :-2, 1:])
     elif mode == 4:
-        out[:, :-1, 1:] = x[:, 1:, :-1] - x[:, :-1, 1:]
+        torch.sub(x[:, 1:, :-1], x[:, :-1, 1:], out=out[:, :-1, 1:])
 
 
 def adjoint_1d(
@@ -39,23 +39,10 @@ def adjoint_1d(
     dim: int,
     scale: float,
 ) -> None:
-    idx = [slice(None)] * 3
-
-    idx[dim] = 0
-    target[tuple(idx)].add_(p[tuple(idx)], alpha=scale)
-
-    idx[dim] = slice(1, -1)
-    idx2 = list(idx)
-    idx2[dim] = slice(None, -2)
-    target[tuple(idx)].sub_(p[tuple(idx2)], alpha=scale).add_(
-        p[tuple(idx)],
-        alpha=scale,
-    )
-
-    idx[dim] = -1
-    idx2 = list(idx)
-    idx2[dim] = -2
-    target[tuple(idx)].sub_(p[tuple(idx2)], alpha=scale)
+    active = p.size(dim) - 1
+    source = p.narrow(dim=dim, start=0, length=active)
+    target.narrow(dim=dim, start=0, length=active).add_(source, alpha=scale)
+    target.narrow(dim=dim, start=1, length=active).sub_(source, alpha=scale)
 
 
 def adjoint_grad(

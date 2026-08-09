@@ -36,6 +36,7 @@ def solve_pdhg(
     tv_dual_radius = mu1_tensor / sigma
     dir_dual_clip = 1.0 / sigma
     sparse_dual_clip = mu2_tensor / sigma
+    negative_sparse_dual_clip = -sparse_dual_clip
     eps = 1e-9
 
     num_stripes = len(directions)
@@ -92,12 +93,11 @@ def solve_pdhg(
 
             if proj:
                 # Clamping clean would break equality unless stripes absorb the residual.
-                torch.clamp(input=clean, max=0, out=scratch)
-                scratch.add_((clean - 1).clamp_(min=0))
-                scratch.div_(num_stripes)
+                scratch.copy_(clean)
+                clean.clamp_(min=0, max=1)
+                scratch.sub_(clean).div_(num_stripes)
                 for stripe_component in stripe_components:
                     stripe_component.add_(scratch)
-                clean.clamp_(min=0, max=1)
 
             grad_row_bar.copy_(grad_row)
             grad_col_bar.copy_(grad_col)
@@ -137,7 +137,7 @@ def solve_pdhg(
                 sparse_dual[component_idx].add_(stripe_components[component_idx])
                 torch.maximum(
                     sparse_dual[component_idx],
-                    -sparse_dual_clip,
+                    negative_sparse_dual_clip,
                     out=sparse_dual[component_idx],
                 )
                 torch.minimum(
@@ -152,7 +152,7 @@ def solve_pdhg(
     if verbose:
         print("")
 
-    return SolveResult(clean=clean.cpu(), iterations=executed_iterations)
+    return SolveResult(clean=clean, iterations=executed_iterations)
 
 
 def _make_mu_tensor(

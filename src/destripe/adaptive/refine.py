@@ -2,8 +2,8 @@ import numpy as np
 import torch
 
 from .constants import EPS
-from .preprocess import extract_high_pass
-from .stripe import (
+from .analysis import extract_high_pass
+from .profiles import (
     MIN_PROFILE_SIGN_CHANGES,
     measure_repetition,
     measure_shrinkage,

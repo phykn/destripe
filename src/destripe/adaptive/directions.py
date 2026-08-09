@@ -2,8 +2,8 @@ import numpy as np
 import torch
 
 from .constants import ALL_DIRECTIONS, CROSS_OFFSETS, EPS, PARALLEL_OFFSETS
-from .preprocess import extract_high_pass
-from .stripe import measure_shrinkage
+from .analysis import extract_high_pass
+from .profiles import measure_shrinkage
 
 
 DIRECTION_COVERAGE_BANDS = 4

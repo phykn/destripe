@@ -495,14 +495,19 @@ class TestDestripe:
         with pytest.raises(TypeError):
             destripe(np.ones((8, 8)), **{old_name: 1})
 
-    def test_wrapper_calls_automatic_clean_exactly_once(
+    def test_wrapper_forwards_native_gray_and_process_size_once(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        calls: list[tuple[tuple[int, int], bool]] = []
+        calls: list[tuple[tuple[int, int], int | None, bool]] = []
 
-        def fake_automatic_clean(gray: np.ndarray, *, proj: bool) -> object:
-            calls.append((gray.shape, proj))
+        def fake_automatic_clean(
+            gray: np.ndarray,
+            *,
+            process_size: int | None,
+            proj: bool,
+        ) -> object:
+            calls.append((gray.shape, process_size, proj))
             return type("Result", (), {"clean": gray - 0.1})()
 
         monkeypatch.setattr(destripe_ops, "automatic_clean", fake_automatic_clean)
@@ -510,7 +515,7 @@ class TestDestripe:
         image = np.linspace(0.0, 1.0, 12 * 18).reshape(12, 18)
         result = destripe(image, process_size=9, proj=False)
 
-        assert calls == [((6, 9), False)]
+        assert calls == [((12, 18), 9, False)]
         assert result.shape == image.shape
 
     def test_wrapper_normalizes_input_and_restores_float_dtype(
@@ -519,7 +524,9 @@ class TestDestripe:
     ) -> None:
         seen: dict[str, object] = {}
 
-        def fake_automatic_clean(gray: np.ndarray, *, proj: bool) -> object:
+        def fake_automatic_clean(
+            gray: np.ndarray, *, process_size: int | None, proj: bool
+        ) -> object:
             seen["dtype"] = gray.dtype
             seen["minimum"] = float(gray.min())
             seen["maximum"] = float(gray.max())
@@ -557,7 +564,9 @@ class TestDestripe:
         dtype: type[np.integer],
         values: tuple[int, int],
     ) -> None:
-        def fake_automatic_clean(gray: np.ndarray, *, proj: bool) -> object:
+        def fake_automatic_clean(
+            gray: np.ndarray, *, process_size: int | None, proj: bool
+        ) -> object:
             return type("Result", (), {"clean": gray.copy()})()
 
         monkeypatch.setattr(destripe_ops, "automatic_clean", fake_automatic_clean)
@@ -578,7 +587,9 @@ class TestDestripe:
     ) -> None:
         info = np.iinfo(dtype)
 
-        def fake_automatic_clean(gray: np.ndarray, *, proj: bool) -> object:
+        def fake_automatic_clean(
+            gray: np.ndarray, *, process_size: int | None, proj: bool
+        ) -> object:
             clean = gray.copy()
             clean[1, 0] = max(0.0, clean[1, 0] - 0.1)
             return type("Result", (), {"clean": clean})()
@@ -602,7 +613,9 @@ class TestDestripe:
     ) -> None:
         seen: dict[str, float] = {}
 
-        def fake_automatic_clean(gray: np.ndarray, *, proj: bool) -> object:
+        def fake_automatic_clean(
+            gray: np.ndarray, *, process_size: int | None, proj: bool
+        ) -> object:
             assert np.isfinite(gray).all()
             seen["minimum"] = float(gray.min())
             seen["maximum"] = float(gray.max())
@@ -632,14 +645,19 @@ class TestDestripe:
         assert result.shape == gray_image.shape
         assert result.dtype == gray_image.dtype
 
-    def test_process_size_resizes_automatic_input_and_correction_back(
+    def test_process_size_is_forwarded_without_resizing_wrapper_input(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        calls: list[tuple[int, int]] = []
+        calls: list[tuple[tuple[int, int], int | None]] = []
 
-        def fake_automatic_clean(gray: np.ndarray, *, proj: bool) -> object:
-            calls.append(gray.shape)
+        def fake_automatic_clean(
+            gray: np.ndarray,
+            *,
+            process_size: int | None,
+            proj: bool,
+        ) -> object:
+            calls.append((gray.shape, process_size))
             return type("Result", (), {"clean": gray - 0.25})()
 
         monkeypatch.setattr(destripe_ops, "automatic_clean", fake_automatic_clean)
@@ -647,24 +665,26 @@ class TestDestripe:
         image = np.linspace(0.0, 1.0, 16 * 20, dtype=np.float64).reshape(16, 20)
         result = destripe(image, process_size=10, proj=False)
 
-        assert calls == [(8, 10)]
+        assert calls == [((16, 20), 10)]
         assert result.shape == image.shape
         assert np.allclose(result, image - 0.25)
 
-    @pytest.mark.parametrize(
-        ("process_size", "expected_shape"),
-        [(None, (80, 100)), (128, (80, 100))],
-    )
-    def test_process_size_uses_original_resolution_when_not_downsampling(
+    @pytest.mark.parametrize("process_size", [None, 128])
+    def test_process_size_is_forwarded_when_no_resize_is_needed(
         self,
         monkeypatch: pytest.MonkeyPatch,
         process_size: int | None,
-        expected_shape: tuple[int, int],
     ) -> None:
-        calls: list[tuple[int, int]] = []
+        calls: list[int | None] = []
 
-        def fake_automatic_clean(gray: np.ndarray, *, proj: bool) -> object:
-            calls.append(gray.shape)
+        def fake_automatic_clean(
+            gray: np.ndarray,
+            *,
+            process_size: int | None,
+            proj: bool,
+        ) -> object:
+            assert gray.shape == (80, 100)
+            calls.append(process_size)
             return type("Result", (), {"clean": gray.copy()})()
 
         monkeypatch.setattr(destripe_ops, "automatic_clean", fake_automatic_clean)
@@ -672,7 +692,7 @@ class TestDestripe:
         image = np.random.default_rng(24).random((80, 100))
         result = destripe(image, process_size=process_size)
 
-        assert calls == [expected_shape]
+        assert calls == [process_size]
         assert result.shape == image.shape
         assert np.allclose(result, image)
 
@@ -709,11 +729,13 @@ class TestDestripe:
         assert result.shape == (7, 9)
         assert calls == [{"dsize": (9, 7), "interpolation": preprocess.cv2.INTER_CUBIC}]
 
-    def test_rgb_uses_one_shared_resized_correction(
+    def test_rgb_uses_one_shared_luma_correction(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        def fake_automatic_clean(gray: np.ndarray, *, proj: bool) -> object:
+        def fake_automatic_clean(
+            gray: np.ndarray, *, process_size: int | None, proj: bool
+        ) -> object:
             return type("Result", (), {"clean": gray - 0.125})()
 
         monkeypatch.setattr(destripe_ops, "automatic_clean", fake_automatic_clean)
@@ -730,7 +752,9 @@ class TestDestripe:
     ) -> None:
         calls: list[bool] = []
 
-        def fake_automatic_clean(gray: np.ndarray, *, proj: bool) -> object:
+        def fake_automatic_clean(
+            gray: np.ndarray, *, process_size: int | None, proj: bool
+        ) -> object:
             calls.append(proj)
             return type("Result", (), {"clean": gray - 0.75})()
 
@@ -795,7 +819,9 @@ class TestDestripe:
     ) -> None:
         seen: dict[str, float] = {}
 
-        def fake_automatic_clean(gray: np.ndarray, *, proj: bool) -> object:
+        def fake_automatic_clean(
+            gray: np.ndarray, *, process_size: int | None, proj: bool
+        ) -> object:
             seen["minimum"] = float(gray.min())
             seen["maximum"] = float(gray.max())
             return type("Result", (), {"clean": gray.copy()})()

@@ -11,14 +11,13 @@ from .directions import (
     score_directions,
     select_directions,
 )
-from .preprocess import extract_high_pass, make_analysis_tensor
+from .analysis import extract_high_pass, make_analysis_tensor
 from .strength import estimate_strength
-from .stripe import (
+from .profiles import MIN_PROFILE_REPETITION, measure_repetition
+from .structure import (
     MIN_PROFILE_DISTRIBUTED_PARTICIPATION,
-    MIN_PROFILE_REPETITION,
     measure_distributed_repetition,
     measure_profile_distribution,
-    measure_repetition,
 )
 
 
