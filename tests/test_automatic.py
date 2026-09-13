@@ -15,13 +15,16 @@ from destripe.adaptive.directions import (
 )
 from destripe.adaptive.analysis import extract_high_pass, make_analysis_tensor
 from destripe.adaptive.profiles import make_profile, project
+from destripe.adaptive.refine import RefineResult
 from destripe.adaptive.strength import _measure_concentration
 from destripe.automatic import (
     AUTOMATIC_MIN_STRIPE_EVIDENCE,
     _select_tile_count,
+    _solve_and_refine,
     _working_result_is_safe,
     automatic_clean,
 )
+from destripe.preprocess import prepare_solver_gray, resize_to_shape
 
 
 ASSET_DIR = Path(__file__).resolve().parents[1] / "asset"
@@ -508,7 +511,7 @@ def test_working_size_keeps_native_analysis_and_bounds_solver(
     monkeypatch.setattr("destripe.automatic.UniversalStripeRemover", FakeRemover)
     monkeypatch.setattr(
         "destripe.automatic.refine_clean",
-        lambda **kwargs: np.asarray(kwargs["clean"]),
+        lambda **kwargs: RefineResult(clean=np.asarray(kwargs["clean"]), limited=False),
     )
     monkeypatch.setattr(
         "destripe.automatic._working_result_is_safe",
@@ -548,6 +551,77 @@ def test_resized_result_guard_compares_directional_amplitude() -> None:
 
     assert _working_result_is_safe(source=source, clean=improved, directions=(0,))
     assert not _working_result_is_safe(source=source, clean=amplified, directions=(0,))
+
+
+@pytest.mark.parametrize("cycles", (4, 8, 12))
+@pytest.mark.parametrize("proj", (False, True))
+def test_resized_refinement_cannot_reuse_its_own_correction(
+    monkeypatch: pytest.MonkeyPatch,
+    cycles: int,
+    proj: bool,
+) -> None:
+    cols = np.arange(128)[None, :]
+    source = np.full((96, 128), 0.4) + 0.03 * np.sin(2 * np.pi * cycles * cols / 128)
+    working = prepare_solver_gray(gray=source, process_size=64)
+
+    def solver_output(image: np.ndarray) -> np.ndarray:
+        phase = 2 * np.pi * cycles * np.arange(image.shape[1]) / image.shape[1]
+        return image - 0.001 * np.sin(phase)[None, :]
+
+    class FakeRemover:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def process_tiled(self, image: np.ndarray, **_: object) -> torch.Tensor:
+            return torch.as_tensor(solver_output(image))
+
+    monkeypatch.setattr("destripe.automatic.UniversalStripeRemover", FakeRemover)
+    correction = resize_to_shape(
+        working - solver_output(working.astype(np.float32)),
+        shape=source.shape,
+    )
+    initial = source - correction
+
+    result = _solve_and_refine(
+        native_values=source,
+        working_values=working,
+        mu1=0.25,
+        mu2=1 / 300,
+        directions=(0,),
+        proj=proj,
+    )
+
+    initial_rms = float(np.sqrt(np.mean(correction**2)))
+    additional_rms = float(np.sqrt(np.mean((result.clean - initial) ** 2)))
+    assert additional_rms <= initial_rms + 1e-9
+
+
+def test_working_size_retries_natively_when_refinement_exhausts_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shapes = []
+    cols = np.arange(128)[None, :]
+    source = np.full((96, 128), 0.4) + 0.03 * np.sin(2 * np.pi * 8 * cols / 128)
+
+    class FakeRemover:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def process_tiled(self, image: np.ndarray, **_: object) -> torch.Tensor:
+            shapes.append(image.shape)
+            if image.shape == source.shape:
+                return torch.as_tensor(image)
+            phase = 2 * np.pi * 8 * np.arange(image.shape[1]) / image.shape[1]
+            return torch.as_tensor(image - 0.001 * np.sin(phase)[None, :])
+
+    monkeypatch.setattr("destripe.automatic.UniversalStripeRemover", FakeRemover)
+    # Even an acceptable residual-energy score cannot override the exhausted budget.
+    monkeypatch.setattr("destripe.automatic._working_result_is_safe", lambda **_: True)
+
+    result = automatic_clean(source, process_size=64, proj=True)
+
+    assert shapes == [(48, 64), (96, 128)]
+    np.testing.assert_allclose(result.clean, source, atol=1e-7)
 
 
 @pytest.mark.parametrize("mode", (1, 3))

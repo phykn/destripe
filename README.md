@@ -20,8 +20,17 @@ solver. Set `proj=False` only when unclipped floating output is required.
 
 Stripe directions and global regularization are always estimated from the
 original resolution. The working solver correction is resized back and refined
-against the original image. If downsampling loses a detected direction, the
-pipeline falls back to the native solver. Resized results are also checked at
+against the original image. Refinement fixes directional support and correction
+budgets from the initial solver output. All passes share those budgets: before
+range projection, their combined additional RMS correction cannot exceed the
+initial solver correction RMS, and each direction also has its own budget.
+Resized results allow up to eight passes; native results use one. This bounds
+amplification of a mistaken solver correction, but does not establish that the
+initial correction is stripe noise.
+
+If a refinement budget prevents further correction on a resized result, or
+downsampling loses a detected direction, the pipeline falls back to the native
+solver. Resized results are also checked at
 the original resolution and retried natively when they fail to remove at least
 half of the detected directional energy. This avoids silently returning an
 aliased or under-corrected image. Consequently, `process_size` is a best-effort
@@ -77,6 +86,16 @@ The bundled `asset/sample.jpeg` is the visual reference for the automatic path.
 Because no paired ground truth exists, tests compare detected directions and
 residual directional energy across native and working resolutions. The notebook
 and visual inspection remain the final qualitative check.
+
+Synthetic tests separately measure residual error in stripe-contaminated areas,
+changes to uncontaminated areas, and scene-edge contrast in the final output
+after structure restoration and optional clipping. Clean text and two-dimensional
+texture cases check unnecessary correction. Repeated-refinement tests cover
+shared budgets across directions and passes, continued removal of supported
+stripes, and native retry after a resized correction exhausts its budget.
+These checks do not guarantee separation of scene texture that is indistinguishable
+from stripe noise. The runtime directional-energy check remains an under-correction
+check, not a general structure-preservation test.
 
 ## Reference
 

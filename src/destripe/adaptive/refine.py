@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 import numpy as np
 import torch
 
@@ -17,46 +19,78 @@ from .profiles import (
 MIN_REFINEMENT_REPETITION = 1.0 / MIN_PROFILE_SIGN_CHANGES
 
 
+@dataclass(frozen=True)
+class RefineResult:
+    clean: np.ndarray
+    limited: bool
+
+
 def refine_clean(
     *,
     gray: np.ndarray,
     clean: np.ndarray,
     directions: tuple[int, ...],
     proj: bool,
-) -> np.ndarray:
+    passes: int = 1,
+) -> RefineResult:
     image = np.asarray(gray, dtype=np.float64)
     refined = np.asarray(clean, dtype=np.float64).copy()
     if not directions or refined.shape != image.shape:
-        return refined
+        return RefineResult(clean=refined, limited=False)
 
-    for mode in directions:
-        high_pass = extract_high_pass(torch.as_tensor(refined, dtype=torch.float32))
-        if measure_repetition(high_pass, mode) <= MIN_REFINEMENT_REPETITION:
-            continue
+    # Only the solver's initial correction is evidence. Refinement must not
+    # increase its own support or replenish its budget on subsequent passes.
+    residual = image - refined
+    remaining = float(np.sqrt(np.mean(residual * residual)))
+    residual_high_pass = extract_high_pass(
+        torch.as_tensor(residual, dtype=torch.float32)
+    )
+    profiles = {
+        mode: _project_centered(residual_high_pass, mode) for mode in directions
+    }
+    budgets = {
+        mode: float(np.sqrt(np.mean(profile * profile)))
+        for mode, profile in profiles.items()
+    }
 
-        candidate = project(high_pass, mode)
-        alpha = measure_shrinkage(high_pass, mode)
+    limited = False
+    for _ in range(passes):
+        changed = False
+        for mode in directions:
+            budget = min(remaining, budgets[mode])
+            high_pass = extract_high_pass(torch.as_tensor(refined, dtype=torch.float32))
+            if measure_repetition(high_pass, mode) <= MIN_REFINEMENT_REPETITION:
+                continue
 
-        candidate = candidate.cpu().numpy().astype(np.float64)
-        candidate -= float(candidate.mean())
-        if alpha <= EPS or float(np.mean(np.abs(candidate))) <= EPS:
-            continue
+            candidate = _project_centered(high_pass, mode)
+            alpha = measure_shrinkage(high_pass, mode)
+            residual_support = float(np.mean(candidate * profiles[mode]))
+            candidate_energy = float(np.mean(candidate * candidate))
+            if alpha <= EPS or residual_support <= EPS or candidate_energy <= EPS:
+                continue
+            if budget <= EPS:
+                limited = True
+                continue
 
-        residual_high_pass = extract_high_pass(
-            torch.as_tensor(image - refined, dtype=torch.float32)
-        )
-        residual_profile = project(residual_high_pass, mode)
-        residual_profile = residual_profile.cpu().numpy().astype(np.float64)
-        residual_profile -= float(residual_profile.mean())
-        residual_support = float(np.mean(candidate * residual_profile))
-        candidate_energy = float(np.mean(candidate * candidate))
-        if residual_support <= EPS or candidate_energy <= EPS:
-            continue
-
-        alpha = min(alpha, residual_support / candidate_energy)
-
-        refined = refined - alpha * candidate
+            candidate_rms = float(np.sqrt(candidate_energy))
+            alpha = min(alpha, residual_support / candidate_energy)
+            if alpha * candidate_rms > budget:
+                alpha = budget / candidate_rms
+                limited = True
+            refined -= alpha * candidate
+            spent = alpha * candidate_rms
+            budgets[mode] -= spent
+            remaining -= spent
+            changed = True
+        if not changed:
+            break
 
     if proj:
         refined = np.clip(refined, 0.0, 1.0)
-    return refined
+    return RefineResult(clean=refined, limited=limited)
+
+
+def _project_centered(tensor: torch.Tensor, mode: int) -> np.ndarray:
+    profile = project(tensor, mode).cpu().numpy().astype(np.float64)
+    profile -= float(profile.mean())
+    return profile

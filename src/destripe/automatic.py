@@ -6,7 +6,7 @@ import torch
 
 from .adaptive import estimate_adaptive_params, estimate_tile_mus
 from .adaptive.analysis import extract_high_pass
-from .adaptive.refine import refine_clean
+from .adaptive.refine import RefineResult, refine_clean
 from .adaptive.profiles import MIN_PROFILE_REPETITION, project
 from .adaptive.structure import extract_sparse_profile_structure
 from .core import UniversalStripeRemover
@@ -18,7 +18,7 @@ AUTOMATIC_OVERLAP = 64
 AUTOMATIC_MIN_TILE_SIDE = 3
 AUTOMATIC_FULL_FRAME_MAX_SIDE = 128
 AUTOMATIC_MIN_CONFIDENCE = 0.1
-AUTOMATIC_RESIZED_REFINEMENT_PASSES = 4
+AUTOMATIC_RESIZED_REFINEMENT_PASSES = 8
 AUTOMATIC_CPU_MAX_PIXELS = 128 * 128
 AUTOMATIC_MIN_WORKING_REDUCTION = 0.2
 AUTOMATIC_MAX_RESIZED_RESIDUAL_RATIO = 0.5
@@ -61,20 +61,13 @@ def automatic_clean(
         or params.stripe_evidence < AUTOMATIC_MIN_STRIPE_EVIDENCE
         or params.profile_repetition < MIN_PROFILE_REPETITION
     ):
-        return AutomaticResult(
-            clean=np.clip(values, 0.0, 1.0) if proj else values.copy(),
-            directions=(),
-            mu1=params.mu1,
-            mu2=params.mu2,
-            confidence=params.confidence,
-            elapsed_seconds=time.perf_counter() - started,
+        prepared = None
+    else:
+        prepared = _prepare_solver_input(
+            values,
+            directions=params.directions,
+            proj=proj,
         )
-
-    prepared = _prepare_solver_input(
-        values,
-        directions=params.directions,
-        proj=proj,
-    )
     if prepared is None:
         return AutomaticResult(
             clean=np.clip(values, 0.0, 1.0) if proj else values.copy(),
@@ -97,30 +90,31 @@ def automatic_clean(
     )
     if not is_resized:
         working_values = solver_values
-    refined_clean = _solve_and_refine(
+    refined = _solve_and_refine(
         native_values=solver_values,
         working_values=working_values,
         mu1=params.mu1,
         mu2=params.mu2,
         directions=params.directions,
         proj=proj,
-        is_resized=is_resized,
     )
-    if is_resized and not _working_result_is_safe(
-        source=solver_values,
-        clean=refined_clean,
-        directions=params.directions,
+    if is_resized and (
+        refined.limited
+        or not _working_result_is_safe(
+            source=solver_values,
+            clean=refined.clean,
+            directions=params.directions,
+        )
     ):
-        refined_clean = _solve_and_refine(
+        refined = _solve_and_refine(
             native_values=solver_values,
             working_values=solver_values,
             mu1=params.mu1,
             mu2=params.mu2,
             directions=params.directions,
             proj=proj,
-            is_resized=False,
         )
-    clean = refined_clean + preserved_structure
+    clean = refined.clean + preserved_structure
     if proj:
         clean = np.clip(clean, 0.0, 1.0)
     return AutomaticResult(
@@ -141,8 +135,7 @@ def _solve_and_refine(
     mu2: float,
     directions: tuple[int, ...],
     proj: bool,
-    is_resized: bool,
-) -> np.ndarray:
+) -> RefineResult:
     tiles = _select_tile_count(working_values.shape)
     tile_mus = (
         estimate_tile_mus(
@@ -167,6 +160,7 @@ def _solve_and_refine(
         proj=proj,
         tile_mus=tile_mus,
     ).numpy()
+    is_resized = working_values.shape != native_values.shape
     if is_resized:
         working_correction = working_values - solver_clean
         solver_clean = native_values - resize_to_shape(
@@ -174,18 +168,13 @@ def _solve_and_refine(
             shape=native_values.shape,
         )
     refinement_passes = AUTOMATIC_RESIZED_REFINEMENT_PASSES if is_resized else 1
-    refined_clean = solver_clean
-    for _ in range(refinement_passes):
-        next_clean = refine_clean(
-            gray=native_values,
-            clean=refined_clean,
-            directions=directions,
-            proj=proj,
-        )
-        if np.array_equal(next_clean, refined_clean):
-            break
-        refined_clean = next_clean
-    return refined_clean
+    return refine_clean(
+        gray=native_values,
+        clean=solver_clean,
+        directions=directions,
+        proj=proj,
+        passes=refinement_passes,
+    )
 
 
 def _working_result_is_safe(
